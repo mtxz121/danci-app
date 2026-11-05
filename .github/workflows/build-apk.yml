@@ -20,7 +20,9 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-
+      # 不再调用 android-actions/setup-android：
+      # 新版 cmdline-tools 已移除 tools 包，该 action 会装失败；
+      # GitHub 的 ubuntu-latest 镜像本身自带 Android SDK 与 ANDROID_HOME。
 
       # 缓存签名密钥，保证后续版本能覆盖安装而不丢数据
       - uses: actions/cache@v4
@@ -31,7 +33,7 @@ jobs:
       - name: Install Capacitor
         run: |
           npm init -y
-          npm i @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npm i @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/filesystem@6 @capacitor/local-notifications@6
 
       - name: Write capacitor config
         run: |
