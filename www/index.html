@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#2b6cf6">
+<meta name="referrer" content="no-referrer">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -350,7 +351,7 @@ const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
 const DEFAULTS = {
   v: 1,
   settings: {
-    theme:'light', onlineAudio:false, autoSpeak:true, autoBackup:true,
+    theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00',
     newPerDay:30, paperCap:40, answerCap:60
   },
@@ -372,6 +373,11 @@ function load(){
     const d = JSON.parse(raw);
     const base = JSON.parse(JSON.stringify(DEFAULTS));
     d.settings = Object.assign(base.settings, d.settings||{});
+    // 安卓 WebView 没有 speechSynthesis，老用户一次性切到联网发音
+    if(!d.settings.onlineAudioFixed){
+      d.settings.onlineAudio = true;
+      d.settings.onlineAudioFixed = true;
+    }
     d.meta = Object.assign(base.meta, d.meta||{});
     d.items = Array.isArray(d.items)? d.items : [];
     d.days = d.days || {};
@@ -509,24 +515,39 @@ function dictLookup(word){
 }
 
 /* ============================================================
-   6. 发音
+   6. 发音（安卓 WebView 没有 speechSynthesis，走联网音频）
+   单词 → 有道真人音；整句 → 百度 TTS
    ============================================================ */
 let lastAudio = null;
-function speak(text){
-  if(!text) return;
-  if(S.settings.onlineAudio){
-    try{
-      if(lastAudio){ lastAudio.pause(); lastAudio=null; }
-      const a = new Audio('https://dict.youdao.com/dictvoice?audio='+encodeURIComponent(text)+'&type=2');
-      lastAudio = a;
-      a.play().catch(()=>tts(text));
-      return;
-    }catch(e){}
+function speak(text, silent){
+  const s = String(text==null?'':text).trim();
+  if(!s) return;
+  if(S.settings.onlineAudio){ onlineSpeak(s, silent); return; }
+  if('speechSynthesis' in window){ tts(s); return; }
+  onlineSpeak(s, silent);
+}
+function onlineSpeak(text, silent){
+  const n = text.split(/\s+/).filter(Boolean).length;
+  const url = n >= 3
+    ? 'https://fanyi.baidu.com/gettts?lan=en&spd=3&source=web&text='+encodeURIComponent(text)
+    : 'https://dict.youdao.com/dictvoice?audio='+encodeURIComponent(text)+'&type=2';
+  try{
+    if(lastAudio){ try{ lastAudio.pause(); }catch(e){} lastAudio = null; }
+    const a = new Audio(url);
+    a.preload = 'auto';
+    lastAudio = a;
+    const p = a.play();
+    if(p && p.catch) p.catch(()=>{
+      if('speechSynthesis' in window) tts(text);
+      else if(!silent) toast('发音加载失败，请检查网络');
+    });
+  }catch(e){
+    if('speechSynthesis' in window) tts(text);
+    else if(!silent) toast('发音失败');
   }
-  tts(text);
 }
 function tts(text){
-  if(!('speechSynthesis' in window)) { toast('当前环境不支持发音'); return; }
+  if(!('speechSynthesis' in window)) return;
   try{
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -718,7 +739,7 @@ function renderLearn(){
   }
   if(learn.phase==='meet' && S.settings.autoSpeak && learn.spokenFor !== it.id){
     learn.spokenFor = it.id;
-    setTimeout(()=>speak(it.en), 260);
+    setTimeout(()=>speak(it.en, true), 260);
   }
 }
 
@@ -1004,7 +1025,7 @@ function renderExam(){
   if(dir==='zh2en') paintTyped($('#typeBox'), a.text, '用下面的键盘输入');
   if(dir==='en2zh' && S.settings.autoSpeak && exam.spokenFor !== it.id){
     exam.spokenFor = it.id;
-    setTimeout(()=>speak(it.en), 260);
+    setTimeout(()=>speak(it.en, true), 260);
   }
 }
 
@@ -1386,7 +1407,7 @@ function renderMe(){
 
     <div class="sect"><h3>学习</h3></div>
     <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;margin-bottom:14px">
-      <div class="row"><div><div class="l">真人发音</div><div class="s">联网获取，失败自动回落系统语音</div></div>
+      <div class="row"><div><div class="l">真人发音</div><div class="s">单词走有道、整句走百度，需联网</div></div>
         <div class="switch ${S.settings.onlineAudio?'on':''}" data-set="onlineAudio"><i></i></div></div>
       <div class="row"><div><div class="l">自动朗读</div><div class="s">进入新词时自动读一遍</div></div>
         <div class="switch ${S.settings.autoSpeak?'on':''}" data-set="autoSpeak"><i></i></div></div>
@@ -1876,6 +1897,7 @@ $('#mask').addEventListener('click', closeSheet);
   loadDict();
   renderAll();
   showScreen('home');
+  save();   // 落盘一次，确保设置迁移/默认值写入本地
   if(S.settings.autoBackup){
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
