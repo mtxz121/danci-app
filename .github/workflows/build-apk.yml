@@ -20,7 +20,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+
 
       # 缓存签名密钥，保证后续版本能覆盖安装而不丢数据
       - uses: actions/cache@v4
