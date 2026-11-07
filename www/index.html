@@ -344,6 +344,7 @@ body.dark #tabbar{background:rgba(24,27,34,.94)}
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
+let APP_VERSION = '1.1';        // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -620,7 +621,18 @@ let learn = null;
 function dictSensesOf(word){
   const d = dictLookup(word);
   if(!d) return [];
-  return Array.isArray(d.s) ? d.s : (Array.isArray(d) ? d : []);
+  const arr = Array.isArray(d.s) ? d.s : (Array.isArray(d) ? d : []);
+  return arr.map(cleanDictSense).filter(Boolean);
+}
+/** 词典里有「zebras 或 zebra 〈动〉斑马」「-rr- 厌恶」这类脏数据，取释义时清掉前缀 */
+function cleanDictSense(s){
+  let t = String(s==null?'':s).trim();
+  if(!/^[A-Za-z\-]/.test(t)) return t;
+  const out = t
+    .replace(/^.*[〈<][^〉>]{1,6}[〉>]\s*/, '')
+    .replace(/^[A-Za-z0-9'’\-\.,\s\/]+?(?=[\u3400-\u9FFF])/, '')
+    .trim();
+  return out || t;
 }
 function phonOf(word){
   const d = dictLookup(word);
@@ -1413,7 +1425,7 @@ function renderMe(){
         <div class="switch ${S.settings.autoSpeak?'on':''}" data-set="autoSpeak"><i></i></div></div>
       <div class="row"><div><div class="l">夜间模式</div><div class="s">护眼配色</div></div>
         <div class="switch ${S.settings.theme==='dark'?'on':''}" data-set="theme"><i></i></div></div>
-      <div class="row"><div><div class="l">每日新词上限</div><div class="s">今天已加 ${S.items.filter(i=>i.created===today()).length} 个</div></div>
+      <div class="row"><div><div class="l">每日新词上限</div><div class="s">每天最多学多少个新词，不含复习</div></div>
         <input class="num-in" type="number" min="0" max="200" value="${S.settings.newPerDay}" data-num="newPerDay"></div>
       <div class="row"><div><div class="l">单日复习上限</div><div class="s">超过顺延到次日</div></div>
         <input class="num-in" type="number" min="5" max="60" value="${S.settings.paperCap}" data-num="paperCap"></div>
@@ -1444,7 +1456,7 @@ function renderMe(){
       <div class="row" data-act="wipe"><div class="l" style="color:var(--bad)">清空全部数据</div><div style="color:var(--ink3)">›</div></div>
     </div>
     <div style="text-align:center;color:var(--ink3);font-size:11.5px;padding:10px 0 20px">
-      词库 ${DICT?Object.keys(DICT).length.toLocaleString()+' 词':'未加载'}</div>`;
+      生词 v${APP_VERSION}　·　词库 ${DICT?Object.keys(DICT).length.toLocaleString()+' 词':'未加载'}</div>`;
 }
 
 function openSnapshots(){
@@ -1525,14 +1537,15 @@ function streak(){
 function openAdd(){
   $('#sheetTitle').textContent = '添加生词';
   $('#sheetBody').innerHTML = `
-    <textarea id="addBox" placeholder="每行一个，格式：英文 中文&#10;&#10;apple&#10;apple 苹果&#10;book 书；预订&#10;look after 照顾 #短语"></textarea>
-    <p class="tip">· 只写英文时，会自动从词典带出中文释义<br>
-      · 一个词有多个释义时用「；」分隔，词典认为有多个释义的词必须写全<br>
-      · 末尾可加 #标签</p>
+    <textarea id="addBox" placeholder="一行一个，可一次粘贴很多&#10;&#10;apple&#10;abandon&#10;look after 照顾 #短语&#10;book 书；预订"></textarea>
+    <p class="tip">· 每行一个词，只写英文也行，会整批自动翻译<br>
+      · 也可以自己写中文，多释义用「；」分隔<br>
+      · 行末可加 #标签，重复的词会自动跳过</p>
     <div style="display:flex;gap:10px;margin-top:14px">
-      <button class="btn" data-act="lookupFill" style="flex:0 0 40%">查词典</button>
-      <button class="btn primary" data-act="doAdd">添加</button>
-    </div>`;
+      <button class="btn" data-act="lookupFill" style="flex:0 0 40%">全部翻译</button>
+      <button class="btn primary" data-act="doAdd">全部导入</button>
+    </div>
+    <p class="tip" style="text-align:center">先「全部翻译」可以检查一遍释义，再导入</p>`;
   openSheet();
   setTimeout(()=>{ const b=$('#addBox'); if(b) b.focus(); },200);
 }
@@ -1544,60 +1557,35 @@ async function doAdd(){
   await loadDict();
 
   const lines = raw.split(/\r?\n/).filter(l=>l.trim());
-  const ok=[], blocked=[], dup=[], bad=[];
-  const usedToday = S.items.filter(i=>i.created===today()).length;
-  let quota = Math.max(0,(Number(S.settings.newPerDay)||30)-usedToday);
+  const ok=[], dup=[], bad=[];
+  let autoZh = 0;
 
   for(const line of lines){
     const p = parseLine(line);
     if(!p){ bad.push(line.trim()); continue; }
-    if(S.items.some(i=>normEn(i.en)===normEn(p.en))){ dup.push(p.en); continue; }
+    if(S.items.some(i=>normEn(i.en)===normEn(p.en)) || ok.some(x=>normEn(x.en)===normEn(p.en))){ dup.push(p.en); continue; }
 
     let zh = p.zh;
-    const ds = dictSensesOf(p.en);
-    if(!zh && ds.length){ zh = ds.slice(0,MAX_FILL_SENSES).join('；'); }
-    if(ds.length>=2 && splitSenses(zh).length < 2){
-      blocked.push({en:p.en, tags:p.tags, dict:ds});
-      continue;
+    if(!zh){
+      const ds = dictSensesOf(p.en);
+      if(ds.length){ zh = ds.slice(0,MAX_FILL_SENSES).join('；'); autoZh++; }
     }
-    if(!zh && !ds.length){ bad.push(p.en); continue; }
-    if(quota<=0){ bad.push(p.en+'（超出今日上限）'); continue; }
-    quota--;
+    if(!zh){ bad.push(p.en); continue; }
     ok.push({en:p.en, zh, tags:p.tags});
   }
 
   ok.forEach(p=>{
-    const it = makeItem(p.en,p.zh,p.tags);
-    S.items.push(it);
+    S.items.push(makeItem(p.en, p.zh, p.tags));
   });
   save();
-
-  let msg = `已添加 ${ok.length} 个`;
-  if(dup.length) msg += `，跳过重复 ${dup.length} 个`;
-  if(bad.length) msg += `，无法识别 ${bad.length} 行`;
-  toast(msg);
-
-  if(blocked.length){
-    const b = blocked[0];
-    $('#sheetTitle').textContent = '释义没写全';
-    $('#sheetBody').innerHTML = `
-      <p class="tip" style="color:var(--warn);font-size:13.5px">词典显示这些词有多个常见释义，必须都写上：</p>
-      <div style="margin-top:10px">
-        ${blocked.map(x=>`<div style="padding:10px 0;border-bottom:1px solid var(--line)">
-          <div style="font-weight:650">${esc(x.en)}</div>
-          <div style="font-size:12.5px;color:var(--ink2);margin-top:3px">应有 ${x.dict.length} 个：${x.dict.slice(0,4).map(esc).join('；')}</div>
-        </div>`).join('')}
-      </div>
-      <div style="display:flex;gap:10px;margin-top:16px">
-        <button class="btn" data-act="closeSheet">返回修改</button>
-        <button class="btn primary" data-act="fillBlocked">按词典补全</button>
-      </div>`;
-    window.__blocked = blocked;
-    return;
-  }
-  closeSheet();
   renderAll();
-  if(ok.length) toast(`已添加 ${ok.length} 个，回首页可以开始学习`);
+
+  let msg = `已导入 ${ok.length} 个`;
+  if(autoZh) msg += `（自动翻译 ${autoZh} 个）`;
+  if(dup.length) msg += `，跳过重复 ${dup.length}`;
+  if(bad.length) msg += `，未识别 ${bad.length}（${bad.slice(0,3).join('、')}）`;
+  toast(msg);
+  if(ok.length) closeSheet();
 }
 
 function parseLine(line){
@@ -1615,30 +1603,26 @@ function parseLine(line){
   return {en:s, zh:'', tags};
 }
 
-function fillBlocked(){
-  const list = window.__blocked||[];
-  list.forEach(x=>{
-    if(S.items.some(i=>normEn(i.en)===normEn(x.en))) return;
-    const it = makeItem(x.en, x.dict.slice(0,MAX_FILL_SENSES).join('；'), x.tags);
-    S.items.push(it);
-  });
-  window.__blocked = null;
-  save(); closeSheet(); renderAll();
-  toast('已按词典补全并添加');
-}
-
 async function lookupFill(){
   const box = $('#addBox');
-  const txt = (box.value||'').trim().split(/\r?\n/)[0];
-  if(!txt){ toast('先输入一个英文单词'); return; }
-  const p = parseLine(txt);
-  const w = p ? p.en : txt;
+  if(!box) return;
+  const lines = (box.value||'').split(/\r?\n/).filter(l=>l.trim());
+  if(!lines.length){ toast('先粘贴单词，一行一个'); return; }
   await loadDict();
-  const ds = dictSensesOf(w);
-  if(!ds.length){ toast('词典里没找到 '+w); return; }
-  const zh = ds.slice(0,MAX_FILL_SENSES).join('；');
-  box.value = w + ' ' + zh + (p&&p.tags.length?' '+p.tags.map(t=>'#'+t).join(' '):'');
-  toast('已填入词典释义');
+  let filled=0, miss=0;
+  const out = lines.map(line=>{
+    const p = parseLine(line);
+    if(!p) return line;
+    let zh = p.zh;
+    if(!zh){
+      const ds = dictSensesOf(p.en);
+      if(ds.length){ zh = ds.slice(0,MAX_FILL_SENSES).join('；'); filled++; }
+      else miss++;
+    }
+    return p.en + (zh ? ' '+zh : '') + (p.tags.length ? ' '+p.tags.map(t=>'#'+t).join(' ') : '');
+  });
+  box.value = out.join('\n');
+  toast(`翻译 ${filled} 个${miss?`，${miss} 个没查到`:''}`);
 }
 
 /* ============================================================
@@ -1843,7 +1827,6 @@ document.addEventListener('click', e=>{
     case 'add': openAdd(); break;
     case 'lookupFill': lookupFill(); break;
     case 'doAdd': doAdd(); break;
-    case 'fillBlocked': fillBlocked(); break;
     case 'closeSheet': closeSheet(); break;
     case 'export': doExport(); break;
     case 'import': doImport(); break;
@@ -1898,6 +1881,9 @@ $('#mask').addEventListener('click', closeSheet);
   renderAll();
   showScreen('home');
   save();   // 落盘一次，确保设置迁移/默认值写入本地
+  fetch('version.json').then(r=>r.json()).then(v=>{
+    if(v && v.version && String(v.version)!==APP_VERSION){ APP_VERSION = String(v.version); renderMe(); }
+  }).catch(()=>{});
   if(S.settings.autoBackup){
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }

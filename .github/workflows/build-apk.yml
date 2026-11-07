@@ -48,13 +48,28 @@ jobs:
       - name: Add Android platform
         run: npx cap add android
 
+      # 版本号唯一来源：www/version.json（改这里就能升版本）
+      - name: Set app version
+        run: |
+          V=$(node -p "require('./www/version.json').version")
+          C=$(node -p "require('./www/version.json').code")
+          sed -i "s/versionCode [0-9]*/versionCode $C/" android/app/build.gradle
+          sed -i "s/versionName \"[^\"]*\"/versionName \"$V\"/" android/app/build.gradle
+          echo "APP_VERSION=$V" >> $GITHUB_ENV
+          grep -n "versionName\|versionCode" android/app/build.gradle
+
       - name: Build debug APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
+      - name: Rename APK
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk "生词-v${APP_VERSION}.apk"
+          ls -lh "生词-v${APP_VERSION}.apk"
+
       - uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: 生词-v*.apk
