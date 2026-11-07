@@ -401,7 +401,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
-let APP_VERSION = '1.4';        // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '1.5';        // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -468,6 +468,12 @@ function load(){
       if(m.tag == null) m.tag = '';
       if(m.img == null) m.img = '';
       if(m.finishedAt == null) m.finishedAt = '';
+      if(m.failCount == null) m.failCount = 0;
+      if(m.fav == null) m.fav = false;
+      if(m.page == null){
+        const loc = parseLoc(m.text||'');
+        m.book = loc.book; m.page = loc.page; m.no = loc.no;
+      }
     });
     d.spellHeat = d.spellHeat || {};
     return d;
@@ -1449,14 +1455,16 @@ function renderHome(){
       </div>`;
   }
 
-  const misDue = dueMistakes().length;
+  const misDueList = dueMistakes();
+  const misDue = misDueList.length;
   if(misDue){
+    const preview = misDueList.slice(0,2).map(m=>locLabel(m)).join('、');
     html += `<div class="sect"><h3>错题</h3><button data-tab="mistakes">错题本 ›</button></div>
       <div class="item" data-act="startMrev">
         <div style="width:38px;height:38px;border-radius:12px;background:var(--warnSoft);color:var(--warn);
           display:flex;align-items:center;justify-content:center;font-weight:700">错</div>
-        <div class="m"><div class="en">今天要重做 ${misDue} 道题${overdueCount()?`（逾期 ${overdueCount()}）`:''}</div>
-          <div class="zh">按艾宾浩斯安排，每道做 ${mistakeGaps().length} 遍</div></div>
+        <div class="m"><div class="en">今天要翻 ${misDue} 处${overdueCount()?`（逾期 ${overdueCount()}）`:''}</div>
+          <div class="zh">${esc(preview)}${misDue>2?' …':''}</div></div>
         <div style="color:var(--ink3)">›</div>
       </div>`;
   }
@@ -1638,19 +1646,72 @@ function startFree(){
 }
 
 /* ============================================================
-   13.7 错题本（语数英物化地 · 错因 · 艾宾浩斯 4 遍）
+   13.7 纸质错题本（科目 · 位置 · 页码清单 · 艾宾浩斯）
    ============================================================ */
 const CAUSES = ['概念不清','计算错','审题错','粗心','完全不会'];
-let misFilter = {q:'', subject:'', cause:''};
+let misFilter = {q:'', subject:'', cause:'', fav:false};
 let misShowDone = false;
 let editM = {subject:'物理', cause:'', img:''};
 let addImg = '';
 let imgTarget = 'add';
 
+/* ---------- 位置解析：练习册十一页5 → P11-5 ---------- */
+function cnNum(s){
+  s = String(s||'').trim();
+  if(/^\d+$/.test(s)) return Number(s);
+  const map = {零:0,一:1,二:2,两:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9};
+  let total = 0, cur = 0;
+  for(const ch of s){
+    if(ch==='十'){ total += (cur||1)*10; cur = 0; }
+    else if(ch==='百'){ total += (cur||1)*100; cur = 0; }
+    else if(map[ch] != null){ cur = map[ch]; }
+  }
+  return total + cur;
+}
+function parseLoc(text){
+  const t = String(text||'');
+  let page = 0, no = '', book = '';
+  let m = t.match(/(\d{1,3})\s*[-–.．]\s*(\d{1,3})/);
+  if(m && /[页Pp]/.test(t)){ page = Number(m[1]); no = m[2]; }
+  if(!page){
+    m = t.match(/(?:第)?([一二三四五六七八九十百零两\d]+)\s*页/);
+    if(m) page = cnNum(m[1]);
+  }
+  if(!no){
+    m = t.match(/页\s*(?:第)?([一二三四五六七八九十百零两\d]+)/);
+    if(m) no = String(cnNum(m[1]));
+  }
+  if(!no){
+    m = t.match(/第\s*([一二三四五六七八九十百零两\d]+)\s*题/);
+    if(m) no = String(cnNum(m[1]));
+  }
+  if(!no && page){
+    m = t.match(/页\s*(\d{1,3})/);
+    if(m) no = m[1];
+  }
+  const bm = t.match(/^(.{1,14}?)(?:第?[一二三四五六七八九十百零两\d]+\s*页|第?[一二三四五六七八九十百零两\d]+\s*题)/);
+  if(bm) book = bm[1].replace(/^今日错题/,'').trim();
+  return {page, no, book};
+}
+function locLabel(m){
+  const book = String(m.book||'').replace(/^第/,'').trim();
+  if(m.page) return (book?book+' ':'')+'P'+m.page+(m.no?'-'+m.no:'');
+  if(m.no) return (book?book+' ':'')+'第'+m.no+'题';
+  return String(m.text||'').slice(0,10);
+}
+function misSort(a,b){
+  const sa = subjIdx(a.subject), sb = subjIdx(b.subject);
+  if(sa!==sb) return sa-sb;
+  const pa = a.page||9999, pb = b.page||9999;
+  if(pa!==pb) return pa-pb;
+  const na = Number(a.no)||9999, nb = Number(b.no)||9999;
+  if(na!==nb) return na-nb;
+  return (a.created||'').localeCompare(b.created||'');
+}
+
 function dueMistakes(){
   const t = today();
-  return S.mistakes.filter(m=>!m.done && m.nextDate && m.nextDate<=t)
-    .sort((a,b)=>(a.nextDate||'').localeCompare(b.nextDate||''));
+  return S.mistakes.filter(m=>!m.done && m.nextDate && m.nextDate<=t).sort(misSort);
 }
 function overdueDays(m){
   if(!m || m.done || !m.nextDate) return 0;
@@ -1665,9 +1726,12 @@ function subjIdx(s){ const i = SUBJECTS.indexOf(s); return i<0?0:i; }
 
 function makeMistake(subject, text, answer, tag, cause, img){
   const t = today();
+  const loc = parseLoc(text);
   return {
     id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
     subject, text, answer:answer||'', tag:tag||'', cause:cause||'', img:img||'',
+    book:loc.book, page:loc.page, no:loc.no,
+    fav:false, failCount:0,
     created:t, stage:0, reviews:0,
     nextDate: addD(t, mistakeGaps()[0]), done:false, finishedAt:'',
     history:[], updatedAt:Date.now()
@@ -1676,16 +1740,17 @@ function makeMistake(subject, text, answer, tag, cause, img){
 
 function misMatch(m){
   const q = misFilter.q.trim().toLowerCase();
+  if(misFilter.fav && !m.fav) return false;
   if(misFilter.subject && m.subject !== misFilter.subject) return false;
   if(misFilter.cause && (m.cause||'') !== misFilter.cause) return false;
   if(q){
-    const hay = [m.text, m.answer||'', m.tag||'', m.subject].join(' ').toLowerCase();
+    const hay = [m.text, m.answer||'', m.tag||'', m.subject, locLabel(m)].join(' ').toLowerCase();
     if(hay.indexOf(q) < 0) return false;
   }
   return true;
 }
 function filteredActive(){
-  return S.mistakes.filter(m=>!m.done && misMatch(m));
+  return S.mistakes.filter(m=>!m.done && misMatch(m)).sort(misSort);
 }
 
 function fmtD(d){
@@ -1712,7 +1777,6 @@ function renderMistakes(){
   const list = S.mistakes.slice();
   const due = dueMistakes();
   const active = list.filter(m=>!m.done);
-  const doneN = list.length - active.length;
   $('#misCount').textContent = active.length + ' 道未完成';
 
   let stats = '';
@@ -1749,30 +1813,38 @@ function renderMistakes(){
       </div>`).join('')}
     </div>` : '';
 
-  const filtered = misFilter.subject || misFilter.cause || misFilter.q.trim();
+  const filtered = misFilter.subject || misFilter.cause || misFilter.fav || misFilter.q.trim();
 
   $('#misBody').innerHTML = `
-    ${due.length?`<div class="mini" style="margin:6px 0 14px;display:flex;align-items:center;gap:12px">
-      <div style="flex:1">
-        <div style="font-weight:650">今天要复习 ${due.length} 道${overdueCount()?`（逾期 ${overdueCount()} 道）`:''}</div>
-        <div style="font-size:12px;color:var(--ink3);margin-top:2px">按艾宾浩斯：第 ${mistakeGaps().join('、')} 天</div>
+    ${due.length?`<div class="mini" style="margin:6px 0 14px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="flex:1">
+          <div style="font-weight:650">今天要翻 ${due.length} 处${overdueCount()?`（逾期 ${overdueCount()}）`:''}</div>
+          <div style="font-size:12px;color:var(--ink3);margin-top:2px">${due.slice(0,3).map(m=>esc(locLabel(m))).join('、')}${due.length>3?' …':''}</div>
+        </div>
+        <button class="btn primary" style="flex:0 0 auto;height:40px;padding:0 16px;font-size:14px" data-act="startMrev">开始</button>
       </div>
-      <button class="btn primary" style="flex:0 0 auto;height:40px;padding:0 16px;font-size:14px" data-act="startMrev">开始</button>
     </div>`:''}
 
-    <input id="misSearch" placeholder="搜索题目 / 答案 / 章节" value="${esc(misFilter.q)}"
+    <input id="misSearch" placeholder="搜索位置 / 页码 / 题目" value="${esc(misFilter.q)}"
       style="width:100%;height:42px;border-radius:12px;border:1px solid var(--line);background:var(--card);
       padding:0 14px;margin:2px 0 10px;outline:none">
     <div class="chips" style="margin:0 0 8px">
       <button class="chip sm ${misFilter.subject?'':'on'}" data-misf="subject" data-v="">全部</button>
       ${SUBJECTS.map(s=>`<button class="chip sm ${misFilter.subject===s?'on':''}" data-misf="subject" data-v="${s}">${s}</button>`).join('')}
+      <button class="chip sm ${misFilter.fav?'on':''}" data-favfilter="1">★ 收藏</button>
     </div>
     <div class="chips" style="margin:0 0 12px">
       <button class="chip sm ${misFilter.cause?'':'on'}" data-misf="cause" data-v="">全部错因</button>
       ${CAUSES.map(c=>`<button class="chip sm ${misFilter.cause===c?'on':''}" data-misf="cause" data-v="${c}">${c}</button>`).join('')}
     </div>
     ${filtered?`<button class="btn primary" style="height:40px;font-size:14px;margin-bottom:12px" data-act="startMrevFiltered">
-      复习筛选出的 ${filteredActive().length} 道</button>`:''}
+      按当前筛选复习 ${filteredActive().length} 道</button>`:''}
+
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="btn" data-act="examList" style="height:38px;font-size:13.5px">考前清单</button>
+      <button class="btn" data-act="startMrev" style="height:38px;font-size:13.5px">按到期复习</button>
+    </div>
 
     <div class="grid2" style="grid-template-columns:repeat(3,1fr);margin:6px 0 16px">${stats}</div>
     ${causeHTML}
@@ -1783,7 +1855,7 @@ function renderMistakes(){
       ${Object.keys(MISTAKE_PRESETS).map(k=>`<button class="chip sm ${S.settings.misGap===k?'on':''}" data-act="misGap" data-v="${k}">${MISTAKE_PRESETS[k].join(' / ')} 天</button>`).join('')}
     </div>
 
-    <div class="sect"><h3>待复习</h3><span style="font-size:12px;color:var(--ink3)">共 ${active.length} 道</span></div>
+    <div class="sect"><h3>错题清单</h3><span style="font-size:12px;color:var(--ink3)">共 ${filtered?filteredActive().length:active.length} 道</span></div>
     <div id="misList"></div>
     <div id="misDone"></div>`;
 
@@ -1793,18 +1865,19 @@ function renderMistakes(){
 }
 
 function misItemHTML(m){
-  const left = mistakeGaps().length - (m.stage||0);
   const od = overdueDays(m);
   const isDue = !m.done && m.nextDate && m.nextDate <= today();
+  const round = Math.min((m.stage||0)+1, mistakeGaps().length);
   const meta = m.done ? `全部复习完成${m.finishedAt?'（'+m.finishedAt+'）':''}`
-    : od ? `<span style="color:var(--bad)">逾期 ${od} 天</span>　·　已做 ${m.reviews||0} 遍`
-    : `${isDue?'今天该复习':'下次 '+m.nextDate}　·　已做 ${m.reviews||0} 遍，还剩 ${left} 遍`;
+    : od ? `<span style="color:var(--bad)">逾期 ${od} 天</span>　·　第 ${round}/${mistakeGaps().length} 遍`
+    : `${isDue?'今天该翻':'下次 '+m.nextDate}　·　第 ${round}/${mistakeGaps().length} 遍`;
   return `<div class="item" data-misdetail="${m.id}">
     <div class="m">
-      <div class="en" style="font-size:14.5px"><span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>${esc(m.text)}${m.img?' <span style="font-size:11px;color:var(--ink3)">[图]</span>':''}</div>
-      <div class="mt">${m.cause?'<span class="pill">'+esc(m.cause)+'</span> ':''}${meta}</div>
+      <div class="en" style="font-size:14.5px"><span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>${esc(locLabel(m))}</div>
+      <div class="zh">${esc(m.text)}</div>
+      <div class="mt">${m.cause?'<span class="pill">'+esc(m.cause)+'</span> ':''}${meta}${m.failCount?` · 卡住 ${m.failCount} 次`:''}</div>
     </div>
-    <div style="color:var(--ink3)">›</div>
+    <button data-fav="${m.id}" style="font-size:17px;color:${m.fav?'var(--warn)':'var(--ink3)'};padding:0 4px">${m.fav?'★':'☆'}</button>
   </div>`;
 }
 
@@ -1812,9 +1885,9 @@ function renderMisList(){
   const el = $('#misList');
   if(!el) return;
   if(!S.mistakes.length){
-    el.innerHTML = `<div class="empty"><b>还没有错题</b>点右上角 + 录入，一行一道，用「科目：题目」</div>`;
+    el.innerHTML = `<div class="empty"><b>还没有错题</b>点右上角 + 录入，写「科目：练习册十一页5」</div>`;
   }else{
-    const active = filteredActive().sort((a,b)=>(a.nextDate||'').localeCompare(b.nextDate||''));
+    const active = filteredActive();
     el.innerHTML = active.length ? active.map(misItemHTML).join('')
       : `<div class="empty"><b>没有符合条件的错题</b>换个筛选条件试试</div>`;
   }
@@ -1830,6 +1903,16 @@ function renderMisList(){
     ${misShowDone?doneList.map(misItemHTML).join(''):''}` : '';
 }
 
+function toggleFav(id){
+  const m = mrevById(id);
+  if(!m) return;
+  m.fav = !m.fav;
+  m.updatedAt = Date.now();
+  save();
+  renderAll();
+  toast(m.fav?'已收藏':'已取消收藏');
+}
+
 /* ---------- 录入 ---------- */
 function openAddMistake(){
   addImg = '';
@@ -1840,17 +1923,12 @@ function openAddMistake(){
     <div class="chips" style="margin:0 0 10px" id="addSubj">
       ${SUBJECTS.map(s=>`<button class="chip sm ${last===s?'on':''}" data-addsub="${s}">${s}</button>`).join('')}
     </div>
-    <textarea id="misBox" placeholder="一行一道，可不写科目（用上面选的）&#10;&#10;今日错题练习册十一页5&#10;卷子第三题 ⇒ 答案：选 B&#10;完形第 12 题 #第三章"></textarea>
-    <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
-      <button class="btn" data-act="pickImg" style="height:40px;font-size:13.5px;flex:0 0 40%">拍照 / 选图</button>
-      <span class="tip" style="margin:0" id="addImgHint">只附在第一道题上</span>
-    </div>
-    <div id="addImgBox"></div>
-    <p class="tip">· 不写科目就用上面选中的（会记住上次）<br>
-      · 用「⇒」分隔题目和答案<br>
-      · 行末可加 #章节<br>
-      · 录入后按第 ${mistakeGaps().join('、')} 天各复习一遍，共 ${mistakeGaps().length} 遍</p>
-    <div style="display:flex;gap:10px;margin-top:14px">
+    <textarea id="misBox" placeholder="一行一道，写清位置最好&#10;&#10;练习册十一页5&#10;卷子第三题第(2)问&#10;练习册 11页 5题 ⇒ 错因：单位没换算"></textarea>
+    <p class="tip">· 不用写科目，用上面选的（会记住上次）<br>
+      · 能认出「十一页5」「P11-5」，自动按页码排序<br>
+      · 行末可用 ⇒ 写备注<br>
+      · 录入后按第 ${mistakeGaps().join('、')} 天各翻一遍，共 ${mistakeGaps().length} 遍</p>
+    <div style="display:flex;gap:10px;margin-top:12px">
       <button class="btn" data-act="closeSheet">取消</button>
       <button class="btn primary" data-act="doAddMistake">录入</button>
     </div>`;
@@ -1867,11 +1945,11 @@ function parseMistakeLine(line, defSub){
   let sub = '', txt = s;
   const sm = s.match(/^(语文|数学|英语|物理|化学|地理)\s*[:：]\s*(.+)$/);
   if(sm){ sub = sm[1]; txt = sm[2].trim(); }
-  let answer = '';
+  let note = '';
   const parts = txt.split(/\s*(?:⇒|=>|→)\s*/);
-  if(parts.length >= 2){ txt = parts[0].trim(); answer = parts.slice(1).join(' ⇒ ').trim(); }
+  if(parts.length >= 2){ txt = parts[0].trim(); note = parts.slice(1).join(' ⇒ ').trim(); }
   if(!txt) return null;
-  return {subject: sub || defSub, text: txt, answer, tag: tags[0]||''};
+  return {subject: sub || defSub, text: txt, answer: note, tag: tags[0]||''};
 }
 
 function doAddMistake(){
@@ -1928,15 +2006,15 @@ function resizeImage(file, cb){
   r.readAsDataURL(file);
 }
 
-/* ---------- 复习 ---------- */
+/* ---------- 今日清单（纸本：翻到对应页，做完勾掉） ---------- */
 let mrev = null;
 function startMrev(ids){
   const list = (Array.isArray(ids) && ids.length)
-    ? ids.map(id=>mrevById(id)).filter(Boolean)
+    ? ids.map(id=>mrevById(id)).filter(Boolean).sort(misSort)
     : dueMistakes();
-  if(!list.length){ toast('今天没有要复习的错题'); return; }
-  mrev = {ids:list.map(m=>m.id), idx:0, counts:{ok:0,fuzzy:0,bad:0}, again:{}, startedAt:Date.now(), revealed:false};
-  $('#mrevTitle').textContent = '错题复习';
+  if(!list.length){ toast('今天没有要翻的错题'); return; }
+  mrev = {ids:list.map(m=>m.id), total:list.length, counts:{ok:0,bad:0}, startedAt:Date.now()};
+  $('#mrevTitle').textContent = '今日错题';
   showScreen('mrev');
   renderMrev();
 }
@@ -1950,42 +2028,64 @@ function mrevById(id){ return S.mistakes.find(m=>m.id===id) || null; }
 function renderMrev(){
   const box = $('#mrevStage');
   if(!mrev){ goHome(); return; }
-  if(mrev.idx >= mrev.ids.length){ renderMrevReport(); return; }
-  const m = mrevById(mrev.ids[mrev.idx]);
-  if(!m){ mrev.idx++; return renderMrev(); }
-  $('#mrevCount').textContent = (mrev.idx+1)+' / '+mrev.ids.length;
-  const pct = Math.round(mrev.idx/mrev.ids.length*100);
-  const round = Math.min((m.stage||0)+1, mistakeGaps().length);
+  const left = mrev.ids.length;
+  const doneN = mrev.total - left;
+  $('#mrevCount').textContent = doneN + ' / ' + mrev.total;
+
+  if(!left){
+    const c = mrev.counts;
+    const ms = Date.now() - mrev.startedAt;
+    const mm = Math.floor(ms/60000), ss = Math.round((ms%60000)/1000);
+    box.innerHTML = `
+      <div class="bigcard" style="justify-content:center">
+        <div style="text-align:center">
+          <div style="font-size:42px;font-weight:750;color:var(--brand)">${c.ok}/${mrev.total}</div>
+          <div class="phon">这轮做完了</div>
+          <div style="font-size:12.5px;color:var(--ink3);margin-top:10px">还不会 ${c.bad} 道（明天再来）· 用时 ${mm} 分 ${ss} 秒</div>
+        </div>
+      </div>
+      <div class="actions"><button class="btn primary" data-act="doneMrev">完成</button></div>`;
+    return;
+  }
+
+  const rows = mrev.ids.map(id=>mrevById(id)).filter(Boolean).map(m=>{
+    const round = Math.min((m.stage||0)+1, mistakeGaps().length);
+    return `<div class="mini" style="margin-bottom:10px;padding:14px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>
+        <span style="font-weight:650">${esc(locLabel(m))}</span>
+        <span style="font-size:11px;color:var(--ink3);margin-left:auto">第 ${round} 遍</span>
+      </div>
+      <div style="font-size:12.5px;color:var(--ink2);margin-top:6px">${esc(m.text)}</div>
+      ${m.cause?`<div style="margin-top:6px"><span class="pill">${esc(m.cause)}</span></div>`:''}
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn bad" style="height:38px;font-size:13.5px" data-act="mrevBad" data-id="${m.id}">还不会</button>
+        <button class="btn ok" style="height:38px;font-size:13.5px" data-act="mrevOk" data-id="${m.id}">做完了</button>
+      </div>
+    </div>`;
+  }).join('');
+
   box.innerHTML = `
-    <div class="pbar"><i style="width:${pct}%"></i></div>
-    <div class="mcard">
-      <div><span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>
-        ${m.cause?`<span class="pill">${esc(m.cause)}</span> `:''}
-        <span style="font-size:12px;color:var(--ink3)">第 ${round} 遍 / 共 ${mistakeGaps().length} 遍</span></div>
-      <div class="mtext">${esc(m.text)}</div>
-      ${m.img?`<img src="${m.img}" style="max-width:100%;max-height:180px;border-radius:12px;object-fit:contain">`:''}
-      ${m.answer?`<div id="answerBox">${mrev.revealed
-        ? `<div style="font-size:13.5px;color:var(--ink2);background:var(--bg);border-radius:12px;padding:12px;white-space:pre-wrap">${esc(m.answer)}</div>`
-        : `<button class="btn" style="height:42px;font-size:14px" data-act="revealAnswer">显示答案</button>`}</div>`
-        : '<div style="font-size:12px;color:var(--ink3)">这题没写答案，自己重做一遍就好</div>'}
-    </div>
-    <div class="actions" style="gap:8px">
-      <button class="btn bad" data-act="mrevBad" style="font-size:14px">没弄懂</button>
-      <button class="btn" data-act="mrevFuzzy" style="font-size:14px">有点模糊</button>
-      <button class="btn ok" data-act="mrevOk" style="font-size:14px">会了</button>
+    <div class="pbar"><i style="width:${Math.round(doneN/mrev.total*100)}%"></i></div>
+    <div class="examtip">翻开纸质本，按位置找到这几题，做完一题勾一题</div>
+    <div style="flex:1;overflow-y:auto;min-height:0;padding-bottom:6px">${rows}</div>
+    <div class="actions" style="padding-bottom:calc(12px + env(safe-area-inset-bottom))">
+      <button class="btn" data-act="doneMrev">先做到这</button>
     </div>`;
 }
 
-function markMrev(level){
+function markMrev(level, id){
   if(!mrev) return;
-  const m = mrevById(mrev.ids[mrev.idx]);
+  const m = mrevById(id);
   if(!m) return;
+  const i = mrev.ids.indexOf(id);
+  if(i < 0) return;
   const t = today();
   m.reviews = (m.reviews||0)+1;
   m.history = (m.history||[]).slice(-30);
   m.history.push({d:t, ok: level==='ok', level});
-  mrev.counts[level==='ok'?'ok':(level==='fuzzy'?'fuzzy':'bad')]++;
   if(level==='ok'){
+    mrev.counts.ok++;
     m.stage = (m.stage||0)+1;
     if(m.stage >= mistakeGaps().length){
       m.done = true; m.nextDate = ''; m.finishedAt = t;
@@ -1993,45 +2093,53 @@ function markMrev(level){
       m.nextDate = addD(t, mistakeGaps()[m.stage]);
     }
   }else{
+    mrev.counts.bad++;
+    m.failCount = (m.failCount||0)+1;
     m.nextDate = addD(t, 1);
-    if(level==='bad' && !mrev.again[m.id]){
-      mrev.again[m.id] = true;
-      mrev.ids.push(m.id);   // 错题重排：本轮末尾再来一次
-    }
   }
   m.updatedAt = Date.now();
+  mrev.ids.splice(i,1);
   save();
-  mrev.idx++;
-  mrev.revealed = false;
   renderMrev();
-}
-
-function renderMrevReport(){
-  const c = mrev.counts;
-  const total = c.ok + c.fuzzy + c.bad;
-  const ms = Date.now() - mrev.startedAt;
-  const mm = Math.floor(ms/60000), ss = Math.round((ms%60000)/1000);
-  const next = S.mistakes.filter(m=>!m.done && m.nextDate).map(m=>m.nextDate).sort()[0];
-  $('#mrevCount').textContent = '';
-  $('#mrevStage').innerHTML = `
-    <div class="bigcard" style="justify-content:center">
-      <div style="text-align:center">
-        <div style="font-size:40px;font-weight:750;color:var(--brand)">${c.ok}/${total}</div>
-        <div class="phon">这轮记住了</div>
-        <div style="margin-top:18px;display:flex;gap:14px;justify-content:center;font-size:13px">
-          <span style="color:var(--ok)">会了 ${c.ok}</span>
-          <span style="color:var(--warn)">模糊 ${c.fuzzy}</span>
-          <span style="color:var(--bad)">没懂 ${c.bad}</span>
-        </div>
-        <div style="font-size:12px;color:var(--ink3);margin-top:12px">用时 ${mm} 分 ${ss} 秒${next?` · 下次 ${next}`:''}</div>
-      </div>
-    </div>
-    <div class="actions"><button class="btn primary" data-act="doneMrev">完成</button></div>`;
 }
 function doneMrev(){
   mrev = null;
   goHome();
   renderAll();
+}
+
+/* ---------- 考前清单 ---------- */
+function examListText(subject){
+  const list = S.mistakes.filter(m=>!m.done)
+    .filter(m=>!subject || m.subject===subject)
+    .sort(misSort);
+  if(!list.length) return '';
+  const groups = {};
+  list.forEach(m=>{ (groups[m.subject] = groups[m.subject] || []).push(m); });
+  return Object.keys(groups).map(s=>{
+    const items = groups[s].map(m=>locLabel(m)+'（第'+(Math.min((m.stage||0)+1,mistakeGaps().length))+'/'+mistakeGaps().length+'遍）').join('　');
+    return '【'+s+'】'+items;
+  }).join('\n');
+}
+function openExamList(){
+  const txt = examListText();
+  if(!txt){ toast('还没有未完成的错题'); return; }
+  $('#sheetTitle').textContent = '考前清单';
+  $('#sheetBody').innerHTML = `
+    <p class="tip">按科目和页码排好，可截图或复制打印。</p>
+    <div style="background:var(--bg);border-radius:12px;padding:12px;font-size:13px;line-height:1.9;white-space:pre-wrap;max-height:50vh;overflow:auto">${esc(txt)}</div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn" data-act="copyList">复制</button>
+      <button class="btn primary" data-act="saveList">下载 txt</button>
+    </div>`;
+  openSheet();
+  window.__examList = txt;
+}
+function copyList(){
+  const txt = window.__examList || examListText();
+  try{
+    navigator.clipboard.writeText(txt).then(()=>toast('已复制')).catch(()=>toast('复制失败，长按选择'));
+  }catch(e){ toast('复制失败，长按选择'); }
 }
 
 /* ---------- 详情 / 编辑 ---------- */
@@ -2043,32 +2151,35 @@ function openMistakeDetail(id){
   $('#sheetBody').innerHTML = `
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
       <span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>
+      <span style="font-weight:650">${esc(locLabel(m))}</span>
       ${m.cause?`<span class="pill">${esc(m.cause)}</span>`:''}
       ${m.tag?`<span class="tag">#${esc(m.tag)}</span>`:''}
     </div>
-    <div class="mtext" style="font-size:16px">${esc(m.text)}</div>
+    <div class="mtext" style="font-size:15px">${esc(m.text)}</div>
     ${m.img?`<img src="${m.img}" style="width:100%;border-radius:12px;margin-top:10px">`:''}
     ${m.answer?`<div style="margin-top:10px;font-size:13.5px;color:var(--ink2);background:var(--bg);border-radius:12px;padding:12px;white-space:pre-wrap">${esc(m.answer)}</div>`:''}
     <div style="font-size:12.5px;color:var(--ink3);margin-top:12px;line-height:2">
-      录入 ${m.created}　·　已复习 ${m.reviews||0} 遍 / 共 ${mistakeGaps().length} 遍<br>
+      录入 ${m.created}　·　已翻 ${m.reviews||0} 遍 / 共 ${mistakeGaps().length} 遍${m.failCount?`　·　卡住 ${m.failCount} 次`:''}<br>
       ${m.done ? `已完成${m.finishedAt?'（'+m.finishedAt+'）':''}`
         : `进度 ${m.stage}/${mistakeGaps().length}　·　下次 ${m.nextDate}${od?`　·　<span style="color:var(--bad)">逾期 ${od} 天</span>`:''}`}
     </div>
     <div style="margin-top:10px">
       ${(m.history||[]).slice().reverse().map(h=>{
         const lv = h.level || (h.ok ? 'ok' : 'bad');
-        const txt = lv==='ok' ? '会了' : lv==='fuzzy' ? '有点模糊' : '没弄懂';
-        const col = lv==='ok' ? 'var(--ok)' : lv==='fuzzy' ? 'var(--warn)' : 'var(--bad)';
+        const txt = lv==='ok' ? '做完了' : '还不会';
+        const col = lv==='ok' ? 'var(--ok)' : 'var(--bad)';
         return `<div class="row" style="padding:7px 0">
           <span style="font-size:12.5px;color:var(--ink2)">${h.d}</span>
           <span style="font-size:12.5px;color:${col}">${txt}</span></div>`;
       }).join('')}
     </div>
     <div style="display:flex;gap:8px;margin-top:16px">
-      <button class="btn" data-act="memNow" data-id="${m.id}" style="height:42px;font-size:13.5px">立即复习</button>
+      <button class="btn" data-act="memNow" data-id="${m.id}" style="height:42px;font-size:13.5px">立即翻</button>
       <button class="btn" data-act="editMistake" data-id="${m.id}" style="height:42px;font-size:13.5px">编辑</button>
       <button class="btn" data-act="delMistake" data-id="${m.id}" style="height:42px;font-size:13.5px;color:var(--bad)">删除</button>
     </div>
+    <button class="btn" data-act="favMistake" data-id="${m.id}" style="margin-top:10px;width:100%;height:42px">
+      ${m.fav?'★ 取消收藏':'☆ 加入收藏夹'}</button>
     <button class="btn primary" data-act="closeSheet" style="margin-top:10px;width:100%;height:44px">关闭</button>`;
   openSheet();
 }
@@ -2083,8 +2194,8 @@ function openEditMistake(id){
     <div class="chips" style="margin:0 0 10px" id="epSubj">
       ${SUBJECTS.map(s=>`<button class="chip sm ${m.subject===s?'on':''}" data-ep="subject" data-v="${s}">${s}</button>`).join('')}
     </div>
-    <label class="fl">题目<textarea id="epText">${esc(m.text)}</textarea></label>
-    <label class="fl">答案 / 解析（可留空）<textarea id="epAnswer">${esc(m.answer||'')}</textarea></label>
+    <label class="fl">题目 / 位置<textarea id="epText">${esc(m.text)}</textarea></label>
+    <label class="fl">备注（可留空）<textarea id="epAnswer">${esc(m.answer||'')}</textarea></label>
     <div class="chips" style="margin:2px 0 12px" id="epCause">
       <button class="chip sm ${!m.cause?'on':''}" data-ep="cause" data-v="">未分类</button>
       ${CAUSES.map(c=>`<button class="chip sm ${m.cause===c?'on':''}" data-ep="cause" data-v="${c}">${c}</button>`).join('')}
@@ -2111,6 +2222,8 @@ function saveMistake(id){
   m.cause = editM.cause || '';
   m.img = editM.img || '';
   m.text = text;
+  const loc = parseLoc(text);
+  m.book = loc.book; m.page = loc.page; m.no = loc.no;
   m.answer = ($('#epAnswer').value||'').trim();
   m.tag = ($('#epTag').value||'').trim().replace(/^#/,'');
   m.updatedAt = Date.now();
@@ -2621,6 +2734,12 @@ document.addEventListener('click', e=>{
     return;
   }
 
+  const fav = e.target.closest('[data-fav]');
+  if(fav){ toggleFav(fav.dataset.fav); return; }
+
+  const ff = e.target.closest('[data-favfilter]');
+  if(ff){ misFilter.fav = !misFilter.fav; renderMistakes(); return; }
+
   const tf = e.target.closest('[data-tagfilter]');
   if(tf){ tagFilter = tf.dataset.tagfilter || ''; renderWords(); return; }
 
@@ -2686,10 +2805,12 @@ document.addEventListener('click', e=>{
       toast('错题间隔改为 '+mistakeGaps().join(' / ')+' 天');
       break;
     }
-    case 'mrevOk': markMrev('ok'); break;
-    case 'mrevFuzzy': markMrev('fuzzy'); break;
-    case 'mrevBad': markMrev('bad'); break;
-    case 'revealAnswer': if(mrev){ mrev.revealed = true; renderMrev(); } break;
+    case 'mrevOk': markMrev('ok', t.dataset.id); break;
+    case 'mrevBad': markMrev('bad', t.dataset.id); break;
+    case 'examList': openExamList(); break;
+    case 'copyList': copyList(); break;
+    case 'saveList': download(`温故考前清单-${today()}.txt`, window.__examList || examListText()); break;
+    case 'favMistake': toggleFav(t.dataset.id); openMistakeDetail(t.dataset.id); break;
     case 'quitMrev': mrev=null; goHome(); break;
     case 'doneMrev': doneMrev(); break;
     case 'toggleDone': misShowDone = !misShowDone; renderMisList(); break;
