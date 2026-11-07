@@ -24,12 +24,6 @@ jobs:
       # 新版 cmdline-tools 已移除 tools 包，该 action 会装失败；
       # GitHub 的 ubuntu-latest 镜像本身自带 Android SDK 与 ANDROID_HOME。
 
-      # 缓存签名密钥，保证后续版本能覆盖安装而不丢数据
-      - uses: actions/cache@v4
-        with:
-          path: ~/.android
-          key: android-debug-keystore-v1
-
       - name: Install Capacitor
         run: |
           npm init -y
@@ -47,6 +41,15 @@ jobs:
 
       - name: Add Android platform
         run: npx cap add android
+
+      # 固定签名密钥（keystore/debug.keystore.b64），保证每个版本签名一致，
+      # 手机可以直接覆盖安装，不需要卸载重装。
+      - name: Restore signing key
+        run: |
+          base64 -d keystore/debug.keystore.b64 > android/app/debug.keystore
+          mkdir -p ~/.android
+          cp android/app/debug.keystore ~/.android/debug.keystore
+          ls -l android/app/debug.keystore ~/.android/debug.keystore
 
       # 版本号唯一来源：www/version.json（改这里就能升版本）
       - name: Set app version
@@ -66,10 +69,10 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk "生词-v${APP_VERSION}.apk"
-          ls -lh "生词-v${APP_VERSION}.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "温故-v${APP_VERSION}.apk"
+          ls -lh "温故-v${APP_VERSION}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: 生词-v*.apk
+          path: 温故-v*.apk

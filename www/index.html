@@ -401,7 +401,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
-let APP_VERSION = '1.2.1';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '1.4';        // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -411,6 +411,7 @@ const DEFAULTS = {
   settings: {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:0, listenInExam:false, recallFirst:true, misGap:'xlong',
+    lastSubject:'物理',
     newPerDay:30, paperCap:40, answerCap:60
   },
   clockOffset: 0,
@@ -461,6 +462,13 @@ function load(){
     d.items = Array.isArray(d.items)? d.items : [];
     d.days = d.days || {};
     d.mistakes = Array.isArray(d.mistakes) ? d.mistakes : [];
+    d.mistakes.forEach(m=>{
+      if(m.answer == null) m.answer = '';
+      if(m.cause == null) m.cause = '';
+      if(m.tag == null) m.tag = '';
+      if(m.img == null) m.img = '';
+      if(m.finishedAt == null) m.finishedAt = '';
+    });
     d.spellHeat = d.spellHeat || {};
     return d;
   }catch(e){ return JSON.parse(JSON.stringify(DEFAULTS)); }
@@ -1447,8 +1455,8 @@ function renderHome(){
       <div class="item" data-act="startMrev">
         <div style="width:38px;height:38px;border-radius:12px;background:var(--warnSoft);color:var(--warn);
           display:flex;align-items:center;justify-content:center;font-weight:700">错</div>
-        <div class="m"><div class="en">今天要重做 ${misDue} 道题</div>
-          <div class="zh">按艾宾浩斯安排，每道做 4 遍</div></div>
+        <div class="m"><div class="en">今天要重做 ${misDue} 道题${overdueCount()?`（逾期 ${overdueCount()}）`:''}</div>
+          <div class="zh">按艾宾浩斯安排，每道做 ${mistakeGaps().length} 遍</div></div>
         <div style="color:var(--ink3)">›</div>
       </div>`;
   }
@@ -1630,23 +1638,76 @@ function startFree(){
 }
 
 /* ============================================================
-   13.7 错题本（语数英物化地 · 按艾宾浩斯间隔复习 4 遍）
+   13.7 错题本（语数英物化地 · 错因 · 艾宾浩斯 4 遍）
    ============================================================ */
+const CAUSES = ['概念不清','计算错','审题错','粗心','完全不会'];
+let misFilter = {q:'', subject:'', cause:''};
+let misShowDone = false;
+let editM = {subject:'物理', cause:'', img:''};
+let addImg = '';
+let imgTarget = 'add';
+
 function dueMistakes(){
   const t = today();
   return S.mistakes.filter(m=>!m.done && m.nextDate && m.nextDate<=t)
     .sort((a,b)=>(a.nextDate||'').localeCompare(b.nextDate||''));
 }
+function overdueDays(m){
+  if(!m || m.done || !m.nextDate) return 0;
+  const t = today();
+  if(m.nextDate >= t) return 0;
+  return Math.round((new Date(t) - new Date(m.nextDate)) / 86400000);
+}
+function overdueCount(){
+  return S.mistakes.filter(m=>!m.done && overdueDays(m)>0).length;
+}
 function subjIdx(s){ const i = SUBJECTS.indexOf(s); return i<0?0:i; }
-function makeMistake(subject, text){
+
+function makeMistake(subject, text, answer, tag, cause, img){
   const t = today();
   return {
     id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
-    subject, text, created:t, stage:0, reviews:0,
-    nextDate: addD(t, mistakeGaps()[0]), done:false,
+    subject, text, answer:answer||'', tag:tag||'', cause:cause||'', img:img||'',
+    created:t, stage:0, reviews:0,
+    nextDate: addD(t, mistakeGaps()[0]), done:false, finishedAt:'',
     history:[], updatedAt:Date.now()
   };
 }
+
+function misMatch(m){
+  const q = misFilter.q.trim().toLowerCase();
+  if(misFilter.subject && m.subject !== misFilter.subject) return false;
+  if(misFilter.cause && (m.cause||'') !== misFilter.cause) return false;
+  if(q){
+    const hay = [m.text, m.answer||'', m.tag||'', m.subject].join(' ').toLowerCase();
+    if(hay.indexOf(q) < 0) return false;
+  }
+  return true;
+}
+function filteredActive(){
+  return S.mistakes.filter(m=>!m.done && misMatch(m));
+}
+
+function fmtD(d){
+  const p = n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());
+}
+function weeklyMistakeTrend(){
+  const out = [];
+  const now = new Date(today());
+  for(let i=5;i>=0;i--){
+    const end = new Date(now); end.setDate(now.getDate() - i*7);
+    const start = new Date(end); start.setDate(end.getDate() - 6);
+    const sd = fmtD(start), ed = fmtD(end);
+    const add = S.mistakes.filter(m=>(m.created||'')>=sd && (m.created||'')<=ed).length;
+    const done = S.mistakes.filter(m=>(m.finishedAt||'')>=sd && (m.finishedAt||'')<=ed).length;
+    out.push({label: sd.slice(5)+'~'+ed.slice(5), add, done});
+  }
+  const max = Math.max(1, ...out.map(w=>w.add), ...out.map(w=>w.done));
+  out.forEach(w=>{ w.addPct = Math.round(w.add/max*100); w.donePct = Math.round(w.done/max*100); });
+  return out;
+}
+
 function renderMistakes(){
   const list = S.mistakes.slice();
   const due = dueMistakes();
@@ -1661,49 +1722,134 @@ function renderMistakes(){
       <div class="k"><span class="subj s${i}">${s}</span></div></div>`;
   });
 
-  let rows = '';
-  if(!list.length){
-    rows = `<div class="empty"><b>还没有错题</b>点右上角 + 录入，一行一道，用「科目：题目」</div>`;
-  }else{
-    const ordered = active.slice().sort((a,b)=>(a.nextDate||'').localeCompare(b.nextDate||''));
-    rows = ordered.map(m=>{
-      const left = mistakeGaps().length - m.stage;
-      const isDue = m.nextDate <= today();
-      return `<div class="item" data-misdetail="${m.id}">
-        <div class="m">
-          <div class="en" style="font-size:14.5px"><span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>${esc(m.text)}</div>
-          <div class="mt">${isDue?'今天该复习':'下次 '+m.nextDate}　·　已做 ${m.reviews} 遍，还剩 ${left} 遍</div>
-        </div>
-        <div style="color:var(--ink3)">›</div>
-      </div>`;
-    }).join('');
-    if(!active.length) rows = `<div class="empty"><b>全部复习完了</b>已完成的 ${doneN} 道都记在档案里</div>`;
-  }
+  const causeRows = CAUSES.map(c=>({c, n: active.filter(m=>(m.cause||'')===c).length})).filter(x=>x.n>0);
+  const causeMax = Math.max(1, ...causeRows.map(x=>x.n));
+  const causeHTML = causeRows.length ? `
+    <div class="sect"><h3>错因分布</h3><span style="font-size:12px;color:var(--ink3)">未标 ${active.filter(m=>!m.cause).length} 道</span></div>
+    <div style="margin-bottom:14px">
+      ${causeRows.map(x=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+        <span style="width:60px;font-size:12.5px;color:var(--ink2);flex:0 0 auto">${x.c}</span>
+        <span style="flex:1;height:8px;border-radius:999px;background:var(--line);overflow:hidden">
+          <i style="display:block;height:100%;width:${Math.round(x.n/causeMax*100)}%;background:var(--brand);border-radius:999px"></i></span>
+        <span style="width:18px;text-align:right;font-size:12px;color:var(--ink3)">${x.n}</span>
+      </div>`).join('')}
+    </div>` : '';
+
+  const weeks = weeklyMistakeTrend();
+  const trendHTML = weeks.some(w=>w.add||w.done) ? `
+    <div class="sect"><h3>近 6 周</h3><span style="font-size:12px;color:var(--ink3)">新增 / 完成</span></div>
+    <div style="margin-bottom:14px">
+      ${weeks.map(w=>`<div style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink2);padding:3px 0">
+        <span style="width:76px;flex:0 0 auto;color:var(--ink3)">${w.label}</span>
+        <span style="flex:1;height:7px;background:var(--line);border-radius:999px;overflow:hidden;display:flex">
+          <i style="width:${w.addPct}%;background:var(--warn)"></i>
+          <i style="width:${w.donePct}%;background:var(--ok)"></i>
+        </span>
+        <span style="width:46px;text-align:right">+${w.add} / ${w.done}</span>
+      </div>`).join('')}
+    </div>` : '';
+
+  const filtered = misFilter.subject || misFilter.cause || misFilter.q.trim();
 
   $('#misBody').innerHTML = `
     ${due.length?`<div class="mini" style="margin:6px 0 14px;display:flex;align-items:center;gap:12px">
       <div style="flex:1">
-        <div style="font-weight:650">今天要复习 ${due.length} 道</div>
+        <div style="font-weight:650">今天要复习 ${due.length} 道${overdueCount()?`（逾期 ${overdueCount()} 道）`:''}</div>
         <div style="font-size:12px;color:var(--ink3);margin-top:2px">按艾宾浩斯：第 ${mistakeGaps().join('、')} 天</div>
       </div>
       <button class="btn primary" style="flex:0 0 auto;height:40px;padding:0 16px;font-size:14px" data-act="startMrev">开始</button>
     </div>`:''}
+
+    <input id="misSearch" placeholder="搜索题目 / 答案 / 章节" value="${esc(misFilter.q)}"
+      style="width:100%;height:42px;border-radius:12px;border:1px solid var(--line);background:var(--card);
+      padding:0 14px;margin:2px 0 10px;outline:none">
+    <div class="chips" style="margin:0 0 8px">
+      <button class="chip sm ${misFilter.subject?'':'on'}" data-misf="subject" data-v="">全部</button>
+      ${SUBJECTS.map(s=>`<button class="chip sm ${misFilter.subject===s?'on':''}" data-misf="subject" data-v="${s}">${s}</button>`).join('')}
+    </div>
+    <div class="chips" style="margin:0 0 12px">
+      <button class="chip sm ${misFilter.cause?'':'on'}" data-misf="cause" data-v="">全部错因</button>
+      ${CAUSES.map(c=>`<button class="chip sm ${misFilter.cause===c?'on':''}" data-misf="cause" data-v="${c}">${c}</button>`).join('')}
+    </div>
+    ${filtered?`<button class="btn primary" style="height:40px;font-size:14px;margin-bottom:12px" data-act="startMrevFiltered">
+      复习筛选出的 ${filteredActive().length} 道</button>`:''}
+
+    <div class="grid2" style="grid-template-columns:repeat(3,1fr);margin:6px 0 16px">${stats}</div>
+    ${causeHTML}
+    ${trendHTML}
+
     <div class="sect"><h3>复习间隔</h3><span style="font-size:12px;color:var(--ink3)">只影响之后的排期</span></div>
     <div class="chips" style="margin:0 0 14px">
       ${Object.keys(MISTAKE_PRESETS).map(k=>`<button class="chip sm ${S.settings.misGap===k?'on':''}" data-act="misGap" data-v="${k}">${MISTAKE_PRESETS[k].join(' / ')} 天</button>`).join('')}
     </div>
-    <div class="grid2" style="grid-template-columns:repeat(3,1fr);margin:6px 0 16px">${stats}</div>
+
     <div class="sect"><h3>待复习</h3><span style="font-size:12px;color:var(--ink3)">共 ${active.length} 道</span></div>
-    ${rows}
-    ${doneN?`<div style="text-align:center;color:var(--ink3);font-size:12px;padding:10px 0">已完成 ${doneN} 道</div>`:''}`;
+    <div id="misList"></div>
+    <div id="misDone"></div>`;
+
+  const inp = $('#misSearch');
+  if(inp) inp.addEventListener('input', e=>{ misFilter.q = e.target.value; renderMisList(); });
+  renderMisList();
 }
 
+function misItemHTML(m){
+  const left = mistakeGaps().length - (m.stage||0);
+  const od = overdueDays(m);
+  const isDue = !m.done && m.nextDate && m.nextDate <= today();
+  const meta = m.done ? `全部复习完成${m.finishedAt?'（'+m.finishedAt+'）':''}`
+    : od ? `<span style="color:var(--bad)">逾期 ${od} 天</span>　·　已做 ${m.reviews||0} 遍`
+    : `${isDue?'今天该复习':'下次 '+m.nextDate}　·　已做 ${m.reviews||0} 遍，还剩 ${left} 遍`;
+  return `<div class="item" data-misdetail="${m.id}">
+    <div class="m">
+      <div class="en" style="font-size:14.5px"><span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>${esc(m.text)}${m.img?' <span style="font-size:11px;color:var(--ink3)">[图]</span>':''}</div>
+      <div class="mt">${m.cause?'<span class="pill">'+esc(m.cause)+'</span> ':''}${meta}</div>
+    </div>
+    <div style="color:var(--ink3)">›</div>
+  </div>`;
+}
+
+function renderMisList(){
+  const el = $('#misList');
+  if(!el) return;
+  if(!S.mistakes.length){
+    el.innerHTML = `<div class="empty"><b>还没有错题</b>点右上角 + 录入，一行一道，用「科目：题目」</div>`;
+  }else{
+    const active = filteredActive().sort((a,b)=>(a.nextDate||'').localeCompare(b.nextDate||''));
+    el.innerHTML = active.length ? active.map(misItemHTML).join('')
+      : `<div class="empty"><b>没有符合条件的错题</b>换个筛选条件试试</div>`;
+  }
+  const doneEl = $('#misDone');
+  if(!doneEl) return;
+  const doneList = S.mistakes.filter(m=>m.done).sort((a,b)=>(b.finishedAt||'').localeCompare(a.finishedAt||''));
+  doneEl.innerHTML = doneList.length ? `
+    <button class="item" data-act="toggleDone" style="width:100%;text-align:left;margin-top:6px">
+      <div class="m"><div class="en" style="font-size:14px">已完成 ${doneList.length} 道</div>
+      <div class="zh">${misShowDone?'点击收起':'点击查看归档'}</div></div>
+      <div style="color:var(--ink3)">${misShowDone?'⌃':'›'}</div>
+    </button>
+    ${misShowDone?doneList.map(misItemHTML).join(''):''}` : '';
+}
+
+/* ---------- 录入 ---------- */
 function openAddMistake(){
-  closeSheet();
+  addImg = '';
+  imgTarget = 'add';
+  const last = S.settings.lastSubject || '物理';
   $('#sheetTitle').textContent = '录入错题';
   $('#sheetBody').innerHTML = `
-    <textarea id="misBox" placeholder="一行一道，格式：科目：题目&#10;&#10;物理：今日错题练习册十一页5&#10;数学：卷子第三题第(2)问&#10;英语：完形第 12 题"></textarea>
-    <p class="tip">科目可以是：语文、数学、英语、物理、化学、地理。<br>录入后按第 ${mistakeGaps().join('、')} 天各复习一遍，共 ${mistakeGaps().length} 遍。</p>
+    <div class="chips" style="margin:0 0 10px" id="addSubj">
+      ${SUBJECTS.map(s=>`<button class="chip sm ${last===s?'on':''}" data-addsub="${s}">${s}</button>`).join('')}
+    </div>
+    <textarea id="misBox" placeholder="一行一道，可不写科目（用上面选的）&#10;&#10;今日错题练习册十一页5&#10;卷子第三题 ⇒ 答案：选 B&#10;完形第 12 题 #第三章"></textarea>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
+      <button class="btn" data-act="pickImg" style="height:40px;font-size:13.5px;flex:0 0 40%">拍照 / 选图</button>
+      <span class="tip" style="margin:0" id="addImgHint">只附在第一道题上</span>
+    </div>
+    <div id="addImgBox"></div>
+    <p class="tip">· 不写科目就用上面选中的（会记住上次）<br>
+      · 用「⇒」分隔题目和答案<br>
+      · 行末可加 #章节<br>
+      · 录入后按第 ${mistakeGaps().join('、')} 天各复习一遍，共 ${mistakeGaps().length} 遍</p>
     <div style="display:flex;gap:10px;margin-top:14px">
       <button class="btn" data-act="closeSheet">取消</button>
       <button class="btn primary" data-act="doAddMistake">录入</button>
@@ -1712,125 +1858,267 @@ function openAddMistake(){
   setTimeout(()=>{ const b=$('#misBox'); if(b) b.focus(); },200);
 }
 
-function parseMistakeLine(line){
-  const s = String(line).trim();
+function parseMistakeLine(line, defSub){
+  let s = String(line).trim();
   if(!s) return null;
-  let m = s.match(/^(语文|数学|英语|物理|化学|地理)\s*[:：]\s*(.+)$/);
-  if(m) return {subject:m[1], text:m[2].trim()};
-  return {subject:'', text:s};
+  const tags = [];
+  let mm;
+  while((mm = s.match(/(?:^|\s)#([^\s#]+)\s*$/))){ tags.unshift(mm[1]); s = s.slice(0,mm.index).trim(); }
+  let sub = '', txt = s;
+  const sm = s.match(/^(语文|数学|英语|物理|化学|地理)\s*[:：]\s*(.+)$/);
+  if(sm){ sub = sm[1]; txt = sm[2].trim(); }
+  let answer = '';
+  const parts = txt.split(/\s*(?:⇒|=>|→)\s*/);
+  if(parts.length >= 2){ txt = parts[0].trim(); answer = parts.slice(1).join(' ⇒ ').trim(); }
+  if(!txt) return null;
+  return {subject: sub || defSub, text: txt, answer, tag: tags[0]||''};
 }
 
 function doAddMistake(){
   const box = $('#misBox');
   const raw = (box && box.value || '').trim();
   if(!raw){ toast('先输入错题'); return; }
-  const ok=[], bad=[];
+  const defSub = S.settings.lastSubject || '物理';
+  const ok = [];
+  let bad = 0;
   raw.split(/\r?\n/).filter(l=>l.trim()).forEach(line=>{
-    const p = parseMistakeLine(line);
-    if(!p) return;
-    if(!p.subject || !p.text){ bad.push(line.trim()); return; }
+    const p = parseMistakeLine(line, defSub);
+    if(!p || !p.subject || !p.text){ bad++; return; }
     ok.push(p);
   });
-  ok.forEach(p=>S.mistakes.push(makeMistake(p.subject, p.text)));
+  ok.forEach((p,i)=>S.mistakes.push(makeMistake(p.subject, p.text, p.answer, p.tag, '', i===0?addImg:'')));
   save();
   closeSheet();
   renderAll();
   let msg = `已录入 ${ok.length} 道`;
-  if(bad.length) msg += `，${bad.length} 行缺科目`;
+  if(bad) msg += `，${bad} 行无法识别`;
   toast(msg);
-  if(bad.length) setTimeout(()=>toast('这些行要以「物理：」开头：'+bad.slice(0,2).join(' / ')), 2100);
 }
 
-/* ---------- 错题复习 ---------- */
+/* ---------- 图片 ---------- */
+function pickImage(cb){
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/*';
+  inp.setAttribute('capture','environment');
+  inp.onchange = ()=>{
+    const f = inp.files && inp.files[0];
+    if(!f) return;
+    resizeImage(f, cb);
+  };
+  inp.click();
+}
+function resizeImage(file, cb){
+  const r = new FileReader();
+  r.onload = ()=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const max = 1000;
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(img.width*k));
+      cv.height = Math.max(1, Math.round(img.height*k));
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      cb(cv.toDataURL('image/jpeg', 0.72));
+    };
+    img.onerror = ()=>toast('图片读取失败');
+    img.src = r.result;
+  };
+  r.onerror = ()=>toast('图片读取失败');
+  r.readAsDataURL(file);
+}
+
+/* ---------- 复习 ---------- */
 let mrev = null;
-function startMrev(){
-  const due = dueMistakes();
-  if(!due.length){ toast('今天没有要复习的错题'); return; }
-  mrev = {ids: due.map(m=>m.id), idx:0, right:0};
+function startMrev(ids){
+  const list = (Array.isArray(ids) && ids.length)
+    ? ids.map(id=>mrevById(id)).filter(Boolean)
+    : dueMistakes();
+  if(!list.length){ toast('今天没有要复习的错题'); return; }
+  mrev = {ids:list.map(m=>m.id), idx:0, counts:{ok:0,fuzzy:0,bad:0}, again:{}, startedAt:Date.now(), revealed:false};
   $('#mrevTitle').textContent = '错题复习';
   showScreen('mrev');
   renderMrev();
 }
+function startMrevFiltered(){
+  const ids = filteredActive().map(m=>m.id);
+  if(!ids.length){ toast('没有符合条件的错题'); return; }
+  startMrev(ids);
+}
 function mrevById(id){ return S.mistakes.find(m=>m.id===id) || null; }
+
 function renderMrev(){
   const box = $('#mrevStage');
   if(!mrev){ goHome(); return; }
-  if(mrev.idx >= mrev.ids.length){
-    $('#mrevCount').textContent = '';
-    box.innerHTML = `<div class="bigcard" style="justify-content:center">
-      <div style="text-align:center">
-        <div style="font-size:40px;font-weight:750;color:var(--brand)">${mrev.right}/${mrev.ids.length}</div>
-        <div class="phon">这轮记住了</div>
-      </div>
-    </div>
-    <div class="actions"><button class="btn primary" data-act="doneMrev">完成</button></div>`;
-    return;
-  }
+  if(mrev.idx >= mrev.ids.length){ renderMrevReport(); return; }
   const m = mrevById(mrev.ids[mrev.idx]);
   if(!m){ mrev.idx++; return renderMrev(); }
   $('#mrevCount').textContent = (mrev.idx+1)+' / '+mrev.ids.length;
   const pct = Math.round(mrev.idx/mrev.ids.length*100);
-  const round = Math.min(m.stage+1, mistakeGaps().length);
+  const round = Math.min((m.stage||0)+1, mistakeGaps().length);
   box.innerHTML = `
     <div class="pbar"><i style="width:${pct}%"></i></div>
     <div class="mcard">
       <div><span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>
+        ${m.cause?`<span class="pill">${esc(m.cause)}</span> `:''}
         <span style="font-size:12px;color:var(--ink3)">第 ${round} 遍 / 共 ${mistakeGaps().length} 遍</span></div>
       <div class="mtext">${esc(m.text)}</div>
-      <div style="font-size:12px;color:var(--ink3)">先自己重做一遍，再翻答案或对照解析</div>
+      ${m.img?`<img src="${m.img}" style="max-width:100%;max-height:180px;border-radius:12px;object-fit:contain">`:''}
+      ${m.answer?`<div id="answerBox">${mrev.revealed
+        ? `<div style="font-size:13.5px;color:var(--ink2);background:var(--bg);border-radius:12px;padding:12px;white-space:pre-wrap">${esc(m.answer)}</div>`
+        : `<button class="btn" style="height:42px;font-size:14px" data-act="revealAnswer">显示答案</button>`}</div>`
+        : '<div style="font-size:12px;color:var(--ink3)">这题没写答案，自己重做一遍就好</div>'}
     </div>
-    <div class="actions">
-      <button class="btn bad" data-act="mrevNo">还没弄懂</button>
-      <button class="btn ok" data-act="mrevYes">已经会了</button>
+    <div class="actions" style="gap:8px">
+      <button class="btn bad" data-act="mrevBad" style="font-size:14px">没弄懂</button>
+      <button class="btn" data-act="mrevFuzzy" style="font-size:14px">有点模糊</button>
+      <button class="btn ok" data-act="mrevOk" style="font-size:14px">会了</button>
     </div>`;
 }
-function markMrev(ok){
+
+function markMrev(level){
   if(!mrev) return;
   const m = mrevById(mrev.ids[mrev.idx]);
   if(!m) return;
   const t = today();
   m.reviews = (m.reviews||0)+1;
-  m.history = (m.history||[]).slice(-20);
-  m.history.push({d:t, ok});
-  if(ok){
-    mrev.right++;
+  m.history = (m.history||[]).slice(-30);
+  m.history.push({d:t, ok: level==='ok', level});
+  mrev.counts[level==='ok'?'ok':(level==='fuzzy'?'fuzzy':'bad')]++;
+  if(level==='ok'){
     m.stage = (m.stage||0)+1;
     if(m.stage >= mistakeGaps().length){
-      m.done = true; m.nextDate = '';
+      m.done = true; m.nextDate = ''; m.finishedAt = t;
     }else{
       m.nextDate = addD(t, mistakeGaps()[m.stage]);
     }
   }else{
-    m.nextDate = addD(t,1);
+    m.nextDate = addD(t, 1);
+    if(level==='bad' && !mrev.again[m.id]){
+      mrev.again[m.id] = true;
+      mrev.ids.push(m.id);   // 错题重排：本轮末尾再来一次
+    }
   }
   m.updatedAt = Date.now();
   save();
   mrev.idx++;
+  mrev.revealed = false;
   renderMrev();
 }
-function doneMrev(){ mrev = null; goHome(); }
 
+function renderMrevReport(){
+  const c = mrev.counts;
+  const total = c.ok + c.fuzzy + c.bad;
+  const ms = Date.now() - mrev.startedAt;
+  const mm = Math.floor(ms/60000), ss = Math.round((ms%60000)/1000);
+  const next = S.mistakes.filter(m=>!m.done && m.nextDate).map(m=>m.nextDate).sort()[0];
+  $('#mrevCount').textContent = '';
+  $('#mrevStage').innerHTML = `
+    <div class="bigcard" style="justify-content:center">
+      <div style="text-align:center">
+        <div style="font-size:40px;font-weight:750;color:var(--brand)">${c.ok}/${total}</div>
+        <div class="phon">这轮记住了</div>
+        <div style="margin-top:18px;display:flex;gap:14px;justify-content:center;font-size:13px">
+          <span style="color:var(--ok)">会了 ${c.ok}</span>
+          <span style="color:var(--warn)">模糊 ${c.fuzzy}</span>
+          <span style="color:var(--bad)">没懂 ${c.bad}</span>
+        </div>
+        <div style="font-size:12px;color:var(--ink3);margin-top:12px">用时 ${mm} 分 ${ss} 秒${next?` · 下次 ${next}`:''}</div>
+      </div>
+    </div>
+    <div class="actions"><button class="btn primary" data-act="doneMrev">完成</button></div>`;
+}
+function doneMrev(){
+  mrev = null;
+  goHome();
+  renderAll();
+}
+
+/* ---------- 详情 / 编辑 ---------- */
 function openMistakeDetail(id){
   const m = mrevById(id);
   if(!m) return;
+  const od = overdueDays(m);
   $('#sheetTitle').textContent = m.subject + '错题';
   $('#sheetBody').innerHTML = `
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+      <span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>
+      ${m.cause?`<span class="pill">${esc(m.cause)}</span>`:''}
+      ${m.tag?`<span class="tag">#${esc(m.tag)}</span>`:''}
+    </div>
     <div class="mtext" style="font-size:16px">${esc(m.text)}</div>
+    ${m.img?`<img src="${m.img}" style="width:100%;border-radius:12px;margin-top:10px">`:''}
+    ${m.answer?`<div style="margin-top:10px;font-size:13.5px;color:var(--ink2);background:var(--bg);border-radius:12px;padding:12px;white-space:pre-wrap">${esc(m.answer)}</div>`:''}
     <div style="font-size:12.5px;color:var(--ink3);margin-top:12px;line-height:2">
       录入 ${m.created}　·　已复习 ${m.reviews||0} 遍 / 共 ${mistakeGaps().length} 遍<br>
-      ${m.done ? '已完成全部复习' : `进度 ${m.stage}/${mistakeGaps().length}　·　下次 ${m.nextDate}`}
+      ${m.done ? `已完成${m.finishedAt?'（'+m.finishedAt+'）':''}`
+        : `进度 ${m.stage}/${mistakeGaps().length}　·　下次 ${m.nextDate}${od?`　·　<span style="color:var(--bad)">逾期 ${od} 天</span>`:''}`}
     </div>
-    <div style="margin-top:14px">
-      ${(m.history||[]).slice().reverse().map(h=>`<div class="row" style="padding:8px 0">
-        <span style="font-size:12.5px;color:var(--ink2)">${h.d}</span>
-        <span style="font-size:12.5px;color:${h.ok?'var(--ok)':'var(--bad)'}">${h.ok?'记住了':'还没懂'}</span>
-      </div>`).join('')}
+    <div style="margin-top:10px">
+      ${(m.history||[]).slice().reverse().map(h=>{
+        const lv = h.level || (h.ok ? 'ok' : 'bad');
+        const txt = lv==='ok' ? '会了' : lv==='fuzzy' ? '有点模糊' : '没弄懂';
+        const col = lv==='ok' ? 'var(--ok)' : lv==='fuzzy' ? 'var(--warn)' : 'var(--bad)';
+        return `<div class="row" style="padding:7px 0">
+          <span style="font-size:12.5px;color:var(--ink2)">${h.d}</span>
+          <span style="font-size:12.5px;color:${col}">${txt}</span></div>`;
+      }).join('')}
     </div>
-    <div style="display:flex;gap:10px;margin-top:16px">
-      <button class="btn" data-act="delMistake" data-id="${m.id}" style="color:var(--bad)">删除</button>
-      <button class="btn primary" data-act="closeSheet">关闭</button>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn" data-act="memNow" data-id="${m.id}" style="height:42px;font-size:13.5px">立即复习</button>
+      <button class="btn" data-act="editMistake" data-id="${m.id}" style="height:42px;font-size:13.5px">编辑</button>
+      <button class="btn" data-act="delMistake" data-id="${m.id}" style="height:42px;font-size:13.5px;color:var(--bad)">删除</button>
+    </div>
+    <button class="btn primary" data-act="closeSheet" style="margin-top:10px;width:100%;height:44px">关闭</button>`;
+  openSheet();
+}
+
+function openEditMistake(id){
+  const m = mrevById(id);
+  if(!m) return;
+  imgTarget = 'edit';
+  editM = {subject:m.subject, cause:m.cause||'', img:m.img||''};
+  $('#sheetTitle').textContent = '编辑错题';
+  $('#sheetBody').innerHTML = `
+    <div class="chips" style="margin:0 0 10px" id="epSubj">
+      ${SUBJECTS.map(s=>`<button class="chip sm ${m.subject===s?'on':''}" data-ep="subject" data-v="${s}">${s}</button>`).join('')}
+    </div>
+    <label class="fl">题目<textarea id="epText">${esc(m.text)}</textarea></label>
+    <label class="fl">答案 / 解析（可留空）<textarea id="epAnswer">${esc(m.answer||'')}</textarea></label>
+    <div class="chips" style="margin:2px 0 12px" id="epCause">
+      <button class="chip sm ${!m.cause?'on':''}" data-ep="cause" data-v="">未分类</button>
+      ${CAUSES.map(c=>`<button class="chip sm ${m.cause===c?'on':''}" data-ep="cause" data-v="${c}">${c}</button>`).join('')}
+    </div>
+    <label class="fl">章节 / 来源（可留空）<input id="epTag" value="${esc(m.tag||'')}"></label>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">
+      <button class="btn" data-act="pickImg" style="height:40px;font-size:13.5px;flex:0 0 42%">${m.img?'换一张图':'添加图片'}</button>
+      ${m.img?'<button class="btn" data-act="clearImg" style="height:40px;font-size:13.5px;flex:0 0 34%;color:var(--bad)">移除图片</button>':''}
+    </div>
+    <div id="epImgBox">${m.img?`<img src="${m.img}" style="max-width:100%;max-height:160px;border-radius:10px;margin:8px 0">`:''}</div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn" data-act="closeSheet">取消</button>
+      <button class="btn primary" data-act="saveMistake" data-id="${m.id}">保存</button>
     </div>`;
   openSheet();
+}
+
+function saveMistake(id){
+  const m = mrevById(id);
+  if(!m) return;
+  const text = ($('#epText').value||'').trim();
+  if(!text){ toast('题目不能为空'); return; }
+  m.subject = editM.subject;
+  m.cause = editM.cause || '';
+  m.img = editM.img || '';
+  m.text = text;
+  m.answer = ($('#epAnswer').value||'').trim();
+  m.tag = ($('#epTag').value||'').trim().replace(/^#/,'');
+  m.updatedAt = Date.now();
+  save();
+  closeSheet();
+  renderAll();
+  openMistakeDetail(id);
+  toast('已保存');
 }
 
 /* ============================================================
@@ -2016,7 +2304,7 @@ async function scheduleReminder(){
     const hm = String(S.settings.remindTime||'20:00').split(':').map(Number);
     try{ await LN.cancel({notifications:[{id:1}]}); }catch(e){}
     await LN.schedule({notifications:[{
-      id:1, title:'温故', body:'今天的单词还没背完，来复习一下吧',
+      id:1, title:'温故', body:'今天还有单词和错题要复习，来温故一下吧',
       schedule:{on:{hour:hm[0]||20, minute:hm[1]||0}, repeats:true, allowWhileIdle:true}
     }]});
     return true;
@@ -2314,6 +2602,25 @@ document.addEventListener('click', e=>{
   const pk = e.target.closest('[data-pick]');
   if(pk){ togglePick(Number(pk.dataset.pick)); return; }
 
+  const mf = e.target.closest('[data-misf]');
+  if(mf){ misFilter[mf.dataset.misf] = mf.dataset.v; renderMistakes(); return; }
+
+  const asub = e.target.closest('[data-addsub]');
+  if(asub){
+    S.settings.lastSubject = asub.dataset.addsub;
+    save();
+    document.querySelectorAll('#addSubj .chip').forEach(b=>b.classList.toggle('on', b.dataset.addsub===S.settings.lastSubject));
+    return;
+  }
+
+  const ep = e.target.closest('[data-ep]');
+  if(ep){
+    const k = ep.dataset.ep;
+    editM[k] = ep.dataset.v;
+    document.querySelectorAll('[data-ep="'+k+'"]').forEach(b=>b.classList.toggle('on', b.dataset.v===ep.dataset.v));
+    return;
+  }
+
   const tf = e.target.closest('[data-tagfilter]');
   if(tf){ tagFilter = tf.dataset.tagfilter || ''; renderWords(); return; }
 
@@ -2372,16 +2679,37 @@ document.addEventListener('click', e=>{
     case 'addMistake': openAddMistake(); break;
     case 'doAddMistake': doAddMistake(); break;
     case 'startMrev': startMrev(); break;
+    case 'startMrevFiltered': startMrevFiltered(); break;
     case 'misGap': {
       S.settings.misGap = t.dataset.v;
       save(); renderMistakes();
       toast('错题间隔改为 '+mistakeGaps().join(' / ')+' 天');
       break;
     }
-    case 'mrevYes': markMrev(true); break;
-    case 'mrevNo': markMrev(false); break;
+    case 'mrevOk': markMrev('ok'); break;
+    case 'mrevFuzzy': markMrev('fuzzy'); break;
+    case 'mrevBad': markMrev('bad'); break;
+    case 'revealAnswer': if(mrev){ mrev.revealed = true; renderMrev(); } break;
     case 'quitMrev': mrev=null; goHome(); break;
     case 'doneMrev': doneMrev(); break;
+    case 'toggleDone': misShowDone = !misShowDone; renderMisList(); break;
+    case 'editMistake': openEditMistake(t.dataset.id); break;
+    case 'saveMistake': saveMistake(t.dataset.id); break;
+    case 'memNow': closeSheet(); startMrev([t.dataset.id]); break;
+    case 'pickImg': pickImage(data=>{
+      if(imgTarget==='add'){
+        addImg = data;
+        const box = $('#addImgBox');
+        if(box) box.innerHTML = `<img src="${data}" style="max-width:100%;max-height:140px;border-radius:10px;margin:8px 0">`;
+        const h = $('#addImgHint');
+        if(h) h.textContent = '已选 1 张';
+      }else{
+        editM.img = data;
+        const box = $('#epImgBox');
+        if(box) box.innerHTML = `<img src="${data}" style="max-width:100%;max-height:160px;border-radius:10px;margin:8px 0">`;
+      }
+    }); break;
+    case 'clearImg': editM.img=''; { const b=$('#epImgBox'); if(b) b.innerHTML=''; } break;
     case 'delMistake': {
       const id = t.dataset.id;
       if(!confirm('删除这道错题？')) break;
