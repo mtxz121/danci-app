@@ -46,7 +46,13 @@ jobs:
       # 手机可以直接覆盖安装，不需要卸载重装。
       - name: Restore signing key
         run: |
-          base64 -d keystore/debug.keystore.b64 > android/app/debug.keystore
+          python3 - <<'PY'
+          import base64, pathlib
+          raw = pathlib.Path('keystore/debug.keystore.b64').read_bytes().decode('utf-8-sig')
+          data = base64.b64decode(''.join(raw.split()))
+          pathlib.Path('android/app/debug.keystore').write_bytes(data)
+          print('keystore bytes:', len(data))
+          PY
           mkdir -p ~/.android
           cp android/app/debug.keystore ~/.android/debug.keystore
           ls -l android/app/debug.keystore ~/.android/debug.keystore
