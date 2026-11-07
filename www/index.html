@@ -401,7 +401,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
-let APP_VERSION = '1.5';        // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '1.6';        // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -411,7 +411,7 @@ const DEFAULTS = {
   settings: {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:0, listenInExam:false, recallFirst:true, misGap:'xlong',
-    lastSubject:'物理',
+    lastSubject:'物理', lastBook:{},
     newPerDay:30, paperCap:40, answerCap:60
   },
   clockOffset: 0,
@@ -462,6 +462,7 @@ function load(){
     d.items = Array.isArray(d.items)? d.items : [];
     d.days = d.days || {};
     d.mistakes = Array.isArray(d.mistakes) ? d.mistakes : [];
+    if(!d.settings.lastBook) d.settings.lastBook = {};
     d.mistakes.forEach(m=>{
       if(m.answer == null) m.answer = '';
       if(m.cause == null) m.cause = '';
@@ -470,9 +471,12 @@ function load(){
       if(m.finishedAt == null) m.finishedAt = '';
       if(m.failCount == null) m.failCount = 0;
       if(m.fav == null) m.fav = false;
+      if(m.book == null) m.book = '';
+      if(/^第+$/.test(m.book)) m.book = '';
       if(m.page == null){
         const loc = parseLoc(m.text||'');
-        m.book = loc.book; m.page = loc.page; m.no = loc.no;
+        if(!m.book) m.book = loc.book;
+        m.page = loc.page; m.no = loc.no;
       }
     });
     d.spellHeat = d.spellHeat || {};
@@ -1649,7 +1653,7 @@ function startFree(){
    13.7 纸质错题本（科目 · 位置 · 页码清单 · 艾宾浩斯）
    ============================================================ */
 const CAUSES = ['概念不清','计算错','审题错','粗心','完全不会'];
-let misFilter = {q:'', subject:'', cause:'', fav:false};
+let misFilter = {q:'', subject:'', cause:'', fav:false, book:''};
 let misShowDone = false;
 let editM = {subject:'物理', cause:'', img:''};
 let addImg = '';
@@ -1690,7 +1694,7 @@ function parseLoc(text){
     if(m) no = m[1];
   }
   const bm = t.match(/^(.{1,14}?)(?:第?[一二三四五六七八九十百零两\d]+\s*页|第?[一二三四五六七八九十百零两\d]+\s*题)/);
-  if(bm) book = bm[1].replace(/^今日错题/,'').trim();
+  if(bm) book = bm[1].replace(/^今日错题/,'').replace(/^第+/,'').trim();
   return {page, no, book};
 }
 function locLabel(m){
@@ -1724,13 +1728,13 @@ function overdueCount(){
 }
 function subjIdx(s){ const i = SUBJECTS.indexOf(s); return i<0?0:i; }
 
-function makeMistake(subject, text, answer, tag, cause, img){
+function makeMistake(subject, text, answer, tag, cause, img, book){
   const t = today();
   const loc = parseLoc(text);
   return {
     id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
     subject, text, answer:answer||'', tag:tag||'', cause:cause||'', img:img||'',
-    book:loc.book, page:loc.page, no:loc.no,
+    book: book || loc.book || '', page:loc.page, no:loc.no,
     fav:false, failCount:0,
     created:t, stage:0, reviews:0,
     nextDate: addD(t, mistakeGaps()[0]), done:false, finishedAt:'',
@@ -1742,6 +1746,7 @@ function misMatch(m){
   const q = misFilter.q.trim().toLowerCase();
   if(misFilter.fav && !m.fav) return false;
   if(misFilter.subject && m.subject !== misFilter.subject) return false;
+  if(misFilter.book && (m.book||'') !== misFilter.book) return false;
   if(misFilter.cause && (m.cause||'') !== misFilter.cause) return false;
   if(q){
     const hay = [m.text, m.answer||'', m.tag||'', m.subject, locLabel(m)].join(' ').toLowerCase();
@@ -1813,7 +1818,8 @@ function renderMistakes(){
       </div>`).join('')}
     </div>` : '';
 
-  const filtered = misFilter.subject || misFilter.cause || misFilter.fav || misFilter.q.trim();
+  const filtered = misFilter.subject || misFilter.cause || misFilter.fav || misFilter.book || misFilter.q.trim();
+  const bookList = [...new Set(S.mistakes.filter(m=>!m.done && m.book).map(m=>m.book))].sort();
 
   $('#misBody').innerHTML = `
     ${due.length?`<div class="mini" style="margin:6px 0 14px">
@@ -1834,6 +1840,10 @@ function renderMistakes(){
       ${SUBJECTS.map(s=>`<button class="chip sm ${misFilter.subject===s?'on':''}" data-misf="subject" data-v="${s}">${s}</button>`).join('')}
       <button class="chip sm ${misFilter.fav?'on':''}" data-favfilter="1">★ 收藏</button>
     </div>
+    ${bookList.length?`<div class="chips" style="margin:0 0 8px">
+      <button class="chip sm ${misFilter.book?'':'on'}" data-bookfilter="">全部书</button>
+      ${bookList.map(b=>`<button class="chip sm ${misFilter.book===b?'on':''}" data-bookfilter="${esc(b)}">${esc(b)}</button>`).join('')}
+    </div>`:''}
     <div class="chips" style="margin:0 0 12px">
       <button class="chip sm ${misFilter.cause?'':'on'}" data-misf="cause" data-v="">全部错因</button>
       ${CAUSES.map(c=>`<button class="chip sm ${misFilter.cause===c?'on':''}" data-misf="cause" data-v="${c}">${c}</button>`).join('')}
@@ -1920,13 +1930,17 @@ function openAddMistake(){
   const last = S.settings.lastSubject || '物理';
   $('#sheetTitle').textContent = '录入错题';
   $('#sheetBody').innerHTML = `
-    <div class="chips" style="margin:0 0 10px" id="addSubj">
+    <div class="chips" style="margin:0 0 8px" id="addSubj">
       ${SUBJECTS.map(s=>`<button class="chip sm ${last===s?'on':''}" data-addsub="${s}">${s}</button>`).join('')}
     </div>
-    <textarea id="misBox" placeholder="一行一道，写清位置最好&#10;&#10;练习册十一页5&#10;卷子第三题第(2)问&#10;练习册 11页 5题 ⇒ 错因：单位没换算"></textarea>
-    <p class="tip">· 不用写科目，用上面选的（会记住上次）<br>
+    <input id="addBook" placeholder="哪本书？如 必刷题 / 五三 / 单元卷（可留空）"
+      value="${esc((S.settings.lastBook||{})[last]||'')}"
+      style="width:100%;height:38px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);
+      padding:0 12px;outline:none;font-size:13.5px;margin:0 0 10px">
+    <textarea id="misBox" placeholder="一行一道，写清位置&#10;&#10;练习册十一页5&#10;卷子第三题第(2)问"></textarea>
+    <p class="tip">· 同一科有多本书时，先在上面填书名，位置就记成「必刷题 P11-5」<br>
+      · 不写科目就用上面选中的（会记住上次）<br>
       · 能认出「十一页5」「P11-5」，自动按页码排序<br>
-      · 行末可用 ⇒ 写备注<br>
       · 录入后按第 ${mistakeGaps().join('、')} 天各翻一遍，共 ${mistakeGaps().length} 遍</p>
     <div style="display:flex;gap:10px;margin-top:12px">
       <button class="btn" data-act="closeSheet">取消</button>
@@ -1957,6 +1971,11 @@ function doAddMistake(){
   const raw = (box && box.value || '').trim();
   if(!raw){ toast('先输入错题'); return; }
   const defSub = S.settings.lastSubject || '物理';
+  const book = (($('#addBook') && $('#addBook').value) || '').trim();
+  if(book){
+    S.settings.lastBook = S.settings.lastBook || {};
+    S.settings.lastBook[defSub] = book;
+  }
   const ok = [];
   let bad = 0;
   raw.split(/\r?\n/).filter(l=>l.trim()).forEach(line=>{
@@ -1964,7 +1983,7 @@ function doAddMistake(){
     if(!p || !p.subject || !p.text){ bad++; return; }
     ok.push(p);
   });
-  ok.forEach((p,i)=>S.mistakes.push(makeMistake(p.subject, p.text, p.answer, p.tag, '', i===0?addImg:'')));
+  ok.forEach((p,i)=>S.mistakes.push(makeMistake(p.subject, p.text, p.answer, p.tag, '', i===0?addImg:'', book)));
   save();
   closeSheet();
   renderAll();
@@ -2108,32 +2127,75 @@ function doneMrev(){
   renderAll();
 }
 
-/* ---------- 考前清单 ---------- */
-function examListText(subject){
-  const list = S.mistakes.filter(m=>!m.done)
-    .filter(m=>!subject || m.subject===subject)
-    .sort(misSort);
+/* ---------- 考前清单（可设入选条件） ---------- */
+let examSel = {subject:'', book:'', only:'all', rounds:'all'};
+function examListItems(sel){
+  const s = sel || examSel;
+  return S.mistakes.filter(m=>{
+    if(m.done) return false;
+    if(s.subject && m.subject !== s.subject) return false;
+    if(s.book && (m.book||'') !== s.book) return false;
+    if(s.only==='fav' && !m.fav) return false;
+    if(s.only==='stuck' && (m.failCount||0) < 2) return false;
+    if(s.only==='overdue' && !(overdueDays(m) > 0)) return false;
+    if(s.only==='due' && !(m.nextDate && m.nextDate <= today())) return false;
+    const round = Math.min((m.stage||0)+1, mistakeGaps().length);
+    if(s.rounds==='early' && round > 2) return false;
+    if(s.rounds==='late' && round < 3) return false;
+    return true;
+  }).sort(misSort);
+}
+function locShort(m){
+  if(m.page) return 'P'+m.page+(m.no?'-'+m.no:'');
+  if(m.no) return '第'+m.no+'题';
+  return String(m.text||'').slice(0,12);
+}
+function examListText(){
+  const list = examListItems();
   if(!list.length) return '';
   const groups = {};
-  list.forEach(m=>{ (groups[m.subject] = groups[m.subject] || []).push(m); });
-  return Object.keys(groups).map(s=>{
-    const items = groups[s].map(m=>locLabel(m)+'（第'+(Math.min((m.stage||0)+1,mistakeGaps().length))+'/'+mistakeGaps().length+'遍）').join('　');
-    return '【'+s+'】'+items;
-  }).join('\n');
+  list.forEach(m=>{
+    const key = m.subject + (m.book ? ' · '+m.book : '');
+    (groups[key] = groups[key] || []).push(m);
+  });
+  return Object.keys(groups).map(k=>`【${k}】`+
+    groups[k].map(m=>`${locShort(m)}（第${Math.min((m.stage||0)+1, mistakeGaps().length)}/${mistakeGaps().length}遍）`).join('　')
+  ).join('\n');
 }
 function openExamList(){
-  const txt = examListText();
-  if(!txt){ toast('还没有未完成的错题'); return; }
+  examSel = {subject:'', book:'', only:'all', rounds:'all'};
+  renderExamSheet();
+}
+function renderExamSheet(){
+  const books = [...new Set(S.mistakes.filter(m=>!m.done && m.book).map(m=>m.book))].sort();
+  const n = examListItems().length;
+  const conds = [['all','全部未完成'],['fav','只看收藏'],['stuck','卡住≥2次'],['overdue','只看逾期'],['due','今天到期']];
+  const rounds = [['all','全部遍次'],['early','第1-2遍'],['late','第3-4遍']];
   $('#sheetTitle').textContent = '考前清单';
   $('#sheetBody').innerHTML = `
-    <p class="tip">按科目和页码排好，可截图或复制打印。</p>
-    <div style="background:var(--bg);border-radius:12px;padding:12px;font-size:13px;line-height:1.9;white-space:pre-wrap;max-height:50vh;overflow:auto">${esc(txt)}</div>
-    <div style="display:flex;gap:10px;margin-top:14px">
-      <button class="btn" data-act="copyList">复制</button>
-      <button class="btn primary" data-act="saveList">下载 txt</button>
-    </div>`;
+    <p class="tip">先设入选条件，再生成清单。</p>
+    <div class="sect" style="margin:10px 0 8px"><h3>科目</h3></div>
+    <div class="chips">
+      <button class="chip sm ${examSel.subject?'':'on'}" data-exs="subject" data-v="">全部</button>
+      ${SUBJECTS.map(s=>`<button class="chip sm ${examSel.subject===s?'on':''}" data-exs="subject" data-v="${s}">${s}</button>`).join('')}
+    </div>
+    ${books.length?`<div class="sect" style="margin:14px 0 8px"><h3>哪本书</h3></div>
+    <div class="chips">
+      <button class="chip sm ${examSel.book?'':'on'}" data-exs="book" data-v="">全部书</button>
+      ${books.map(b=>`<button class="chip sm ${examSel.book===b?'on':''}" data-exs="book" data-v="${esc(b)}">${esc(b)}</button>`).join('')}
+    </div>`:''}
+    <div class="sect" style="margin:14px 0 8px"><h3>条件</h3></div>
+    <div class="chips">
+      ${conds.map(([v,l])=>`<button class="chip sm ${examSel.only===v?'on':''}" data-exs="only" data-v="${v}">${l}</button>`).join('')}
+    </div>
+    <div class="sect" style="margin:14px 0 8px"><h3>遍次</h3></div>
+    <div class="chips">
+      ${rounds.map(([v,l])=>`<button class="chip sm ${examSel.rounds===v?'on':''}" data-exs="rounds" data-v="${v}">${l}</button>`).join('')}
+    </div>
+    <button class="btn primary" style="width:100%;margin-top:18px" data-act="genExamList">生成清单（${n} 道）</button>
+    <div id="examListOut"></div>`;
   openSheet();
-  window.__examList = txt;
+  window.__examList = '';
 }
 function copyList(){
   const txt = window.__examList || examListText();
@@ -2195,6 +2257,7 @@ function openEditMistake(id){
       ${SUBJECTS.map(s=>`<button class="chip sm ${m.subject===s?'on':''}" data-ep="subject" data-v="${s}">${s}</button>`).join('')}
     </div>
     <label class="fl">题目 / 位置<textarea id="epText">${esc(m.text)}</textarea></label>
+    <label class="fl">哪本书（可留空）<input id="epBook" value="${esc(m.book||'')}" placeholder="必刷题 / 五三 / 单元卷"></label>
     <label class="fl">备注（可留空）<textarea id="epAnswer">${esc(m.answer||'')}</textarea></label>
     <div class="chips" style="margin:2px 0 12px" id="epCause">
       <button class="chip sm ${!m.cause?'on':''}" data-ep="cause" data-v="">未分类</button>
@@ -2223,7 +2286,8 @@ function saveMistake(id){
   m.img = editM.img || '';
   m.text = text;
   const loc = parseLoc(text);
-  m.book = loc.book; m.page = loc.page; m.no = loc.no;
+  m.book = ($('#epBook').value||'').trim() || loc.book;
+  m.page = loc.page; m.no = loc.no;
   m.answer = ($('#epAnswer').value||'').trim();
   m.tag = ($('#epTag').value||'').trim().replace(/^#/,'');
   m.updatedAt = Date.now();
@@ -2723,8 +2787,16 @@ document.addEventListener('click', e=>{
     S.settings.lastSubject = asub.dataset.addsub;
     save();
     document.querySelectorAll('#addSubj .chip').forEach(b=>b.classList.toggle('on', b.dataset.addsub===S.settings.lastSubject));
+    const bi = $('#addBook');
+    if(bi) bi.value = (S.settings.lastBook||{})[S.settings.lastSubject] || '';
     return;
   }
+
+  const bk = e.target.closest('[data-bookfilter]');
+  if(bk){ misFilter.book = bk.dataset.bookfilter || ''; renderMistakes(); return; }
+
+  const exs = e.target.closest('[data-exs]');
+  if(exs){ examSel[exs.dataset.exs] = exs.dataset.v; renderExamSheet(); return; }
 
   const ep = e.target.closest('[data-ep]');
   if(ep){
@@ -2808,6 +2880,20 @@ document.addEventListener('click', e=>{
     case 'mrevOk': markMrev('ok', t.dataset.id); break;
     case 'mrevBad': markMrev('bad', t.dataset.id); break;
     case 'examList': openExamList(); break;
+    case 'genExamList': {
+      const txt = examListText();
+      if(!txt){ toast('没有符合条件的错题'); break; }
+      window.__examList = txt;
+      const out = $('#examListOut');
+      if(out) out.innerHTML = `
+        <div style="background:var(--bg);border-radius:12px;padding:12px;font-size:13px;line-height:1.9;
+          white-space:pre-wrap;margin-top:14px;max-height:38vh;overflow:auto">${esc(txt)}</div>
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <button class="btn" data-act="copyList">复制</button>
+          <button class="btn primary" data-act="saveList">下载 txt</button>
+        </div>`;
+      break;
+    }
     case 'copyList': copyList(); break;
     case 'saveList': download(`温故考前清单-${today()}.txt`, window.__examList || examListText()); break;
     case 'favMistake': toggleFav(t.dataset.id); openMistakeDetail(t.dataset.id); break;
