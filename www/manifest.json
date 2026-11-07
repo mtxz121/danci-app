@@ -1,7 +1,7 @@
 {
-  "name": "生词",
-  "short_name": "生词",
-  "description": "艾宾浩斯生词学习与默写",
+  "name": "温故",
+  "short_name": "温故",
+  "description": "温故：艾宾浩斯生词默写与错题复习",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

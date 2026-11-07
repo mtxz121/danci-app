@@ -40,7 +40,7 @@ jobs:
           cat > capacitor.config.json <<'EOF'
           {
             "appId": "com.mine.wordapp",
-            "appName": "生词",
+            "appName": "温故",
             "webDir": "www"
           }
           EOF
