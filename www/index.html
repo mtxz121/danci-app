@@ -401,7 +401,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
-let APP_VERSION = '1.6';        // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '1.7';        // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -411,7 +411,7 @@ const DEFAULTS = {
   settings: {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:0, listenInExam:false, recallFirst:true, misGap:'xlong',
-    lastSubject:'物理', lastBook:{},
+    lastSubject:'物理', lastBook:{}, lastTopic:{},
     newPerDay:30, paperCap:40, answerCap:60
   },
   clockOffset: 0,
@@ -473,6 +473,8 @@ function load(){
       if(m.fav == null) m.fav = false;
       if(m.book == null) m.book = '';
       if(/^第+$/.test(m.book)) m.book = '';
+      if(m.topic == null) m.topic = '';
+      if(!Array.isArray(m.derived)) m.derived = [];
       if(m.page == null){
         const loc = parseLoc(m.text||'');
         if(!m.book) m.book = loc.book;
@@ -1653,7 +1655,9 @@ function startFree(){
    13.7 纸质错题本（科目 · 位置 · 页码清单 · 艾宾浩斯）
    ============================================================ */
 const CAUSES = ['概念不清','计算错','审题错','粗心','完全不会'];
-let misFilter = {q:'', subject:'', cause:'', fav:false, book:''};
+let misFilter = {q:'', subject:'', cause:'', fav:false, book:'', topic:''};
+let misPage = 1;
+const MIS_PAGE = 50;
 let misShowDone = false;
 let editM = {subject:'物理', cause:'', img:''};
 let addImg = '';
@@ -1728,13 +1732,14 @@ function overdueCount(){
 }
 function subjIdx(s){ const i = SUBJECTS.indexOf(s); return i<0?0:i; }
 
-function makeMistake(subject, text, answer, tag, cause, img, book){
+function makeMistake(subject, text, answer, tag, cause, img, book, topic, derived){
   const t = today();
   const loc = parseLoc(text);
   return {
     id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
     subject, text, answer:answer||'', tag:tag||'', cause:cause||'', img:img||'',
     book: book || loc.book || '', page:loc.page, no:loc.no,
+    topic: topic||'', derived: Array.isArray(derived)?derived:[],
     fav:false, failCount:0,
     created:t, stage:0, reviews:0,
     nextDate: addD(t, mistakeGaps()[0]), done:false, finishedAt:'',
@@ -1747,9 +1752,10 @@ function misMatch(m){
   if(misFilter.fav && !m.fav) return false;
   if(misFilter.subject && m.subject !== misFilter.subject) return false;
   if(misFilter.book && (m.book||'') !== misFilter.book) return false;
+  if(misFilter.topic && (m.topic||'') !== misFilter.topic) return false;
   if(misFilter.cause && (m.cause||'') !== misFilter.cause) return false;
   if(q){
-    const hay = [m.text, m.answer||'', m.tag||'', m.subject, locLabel(m)].join(' ').toLowerCase();
+    const hay = [m.text, m.answer||'', m.tag||'', m.subject, m.topic||'', (m.derived||[]).join(' '), locLabel(m)].join(' ').toLowerCase();
     if(hay.indexOf(q) < 0) return false;
   }
   return true;
@@ -1818,8 +1824,11 @@ function renderMistakes(){
       </div>`).join('')}
     </div>` : '';
 
-  const filtered = misFilter.subject || misFilter.cause || misFilter.fav || misFilter.book || misFilter.q.trim();
+  const filtered = misFilter.subject || misFilter.cause || misFilter.fav || misFilter.book || misFilter.topic || misFilter.q.trim();
   const bookList = [...new Set(S.mistakes.filter(m=>!m.done && m.book).map(m=>m.book))].sort();
+  const topicCount = {};
+  S.mistakes.filter(m=>!m.done && m.topic).forEach(m=>{ topicCount[m.topic] = (topicCount[m.topic]||0)+1; });
+  const topicList = Object.keys(topicCount).sort((a,b)=>topicCount[b]-topicCount[a]).slice(0,10);
 
   $('#misBody').innerHTML = `
     ${due.length?`<div class="mini" style="margin:6px 0 14px">
@@ -1843,6 +1852,10 @@ function renderMistakes(){
     ${bookList.length?`<div class="chips" style="margin:0 0 8px">
       <button class="chip sm ${misFilter.book?'':'on'}" data-bookfilter="">全部书</button>
       ${bookList.map(b=>`<button class="chip sm ${misFilter.book===b?'on':''}" data-bookfilter="${esc(b)}">${esc(b)}</button>`).join('')}
+    </div>`:''}
+    ${topicList.length?`<div class="chips" style="margin:0 0 8px">
+      <button class="chip sm ${misFilter.topic?'':'on'}" data-misf="topic" data-v="">全部知识点</button>
+      ${topicList.map(t=>`<button class="chip sm ${misFilter.topic===t?'on':''}" data-misf="topic" data-v="${esc(t)}">${esc(t)} ${topicCount[t]}</button>`).join('')}
     </div>`:''}
     <div class="chips" style="margin:0 0 12px">
       <button class="chip sm ${misFilter.cause?'':'on'}" data-misf="cause" data-v="">全部错因</button>
@@ -1870,7 +1883,7 @@ function renderMistakes(){
     <div id="misDone"></div>`;
 
   const inp = $('#misSearch');
-  if(inp) inp.addEventListener('input', e=>{ misFilter.q = e.target.value; renderMisList(); });
+  if(inp) inp.addEventListener('input', e=>{ misFilter.q = e.target.value; misPage = 1; renderMisList(); });
   renderMisList();
 }
 
@@ -1885,7 +1898,7 @@ function misItemHTML(m){
     <div class="m">
       <div class="en" style="font-size:14.5px"><span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>${esc(locLabel(m))}</div>
       <div class="zh">${esc(m.text)}</div>
-      <div class="mt">${m.cause?'<span class="pill">'+esc(m.cause)+'</span> ':''}${meta}${m.failCount?` · 卡住 ${m.failCount} 次`:''}</div>
+      <div class="mt">${m.topic?`<span class="tag">${esc(m.topic)}</span> `:''}${m.cause?'<span class="pill">'+esc(m.cause)+'</span> ':''}${meta}${m.failCount?` · 卡住 ${m.failCount} 次`:''}</div>
     </div>
     <button data-fav="${m.id}" style="font-size:17px;color:${m.fav?'var(--warn)':'var(--ink3)'};padding:0 4px">${m.fav?'★':'☆'}</button>
   </div>`;
@@ -1897,8 +1910,12 @@ function renderMisList(){
   if(!S.mistakes.length){
     el.innerHTML = `<div class="empty"><b>还没有错题</b>点右上角 + 录入，写「科目：练习册十一页5」</div>`;
   }else{
-    const active = filteredActive();
-    el.innerHTML = active.length ? active.map(misItemHTML).join('')
+    const all = filteredActive();
+    const shown = all.slice(0, misPage*MIS_PAGE);
+    el.innerHTML = shown.length ? shown.map(misItemHTML).join('')
+      + (all.length > shown.length
+        ? `<button class="btn" data-act="misMore" style="width:100%;height:42px;font-size:13.5px;margin-bottom:8px">加载更多（还有 ${all.length-shown.length} 道）</button>`
+        : '')
       : `<div class="empty"><b>没有符合条件的错题</b>换个筛选条件试试</div>`;
   }
   const doneEl = $('#misDone');
@@ -1923,6 +1940,12 @@ function toggleFav(id){
   toast(m.fav?'已收藏':'已取消收藏');
 }
 
+function uniqueBooks(){ return [...new Set(S.mistakes.filter(m=>m.book).map(m=>m.book))].sort(); }
+function uniqueTopics(){ return [...new Set(S.mistakes.filter(m=>m.topic).map(m=>m.topic))].sort(); }
+function datalist(id, arr){
+  return `<datalist id="${id}">${arr.map(x=>`<option value="${esc(x)}"></option>`).join('')}</datalist>`;
+}
+
 /* ---------- 录入 ---------- */
 function openAddMistake(){
   addImg = '';
@@ -1933,8 +1956,17 @@ function openAddMistake(){
     <div class="chips" style="margin:0 0 8px" id="addSubj">
       ${SUBJECTS.map(s=>`<button class="chip sm ${last===s?'on':''}" data-addsub="${s}">${s}</button>`).join('')}
     </div>
-    <input id="addBook" placeholder="哪本书？如 必刷题 / 五三 / 单元卷（可留空）"
+    <input id="addBook" list="bkList" placeholder="哪本书？如 必刷题 / 五三 / 单元卷（可留空）"
       value="${esc((S.settings.lastBook||{})[last]||'')}"
+      style="width:100%;height:38px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);
+      padding:0 12px;outline:none;font-size:13.5px;margin:0 0 8px">
+    ${datalist('bkList', uniqueBooks())}
+    <input id="addTopic" list="tpList" placeholder="知识点？如 立体几何（可留空）"
+      value="${esc((S.settings.lastTopic||{})[last]||'')}"
+      style="width:100%;height:38px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);
+      padding:0 12px;outline:none;font-size:13.5px;margin:0 0 8px">
+    ${datalist('tpList', uniqueTopics())}
+    <input id="addDerived" placeholder="衍生知识点，用顿号或逗号分隔（可留空）"
       style="width:100%;height:38px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);
       padding:0 12px;outline:none;font-size:13.5px;margin:0 0 10px">
     <textarea id="misBox" placeholder="一行一道，写清位置&#10;&#10;练习册十一页5&#10;卷子第三题第(2)问"></textarea>
@@ -1966,15 +1998,25 @@ function parseMistakeLine(line, defSub){
   return {subject: sub || defSub, text: txt, answer: note, tag: tags[0]||''};
 }
 
+function splitDerived(s){
+  return String(s||'').split(/[,，、;；\s]+/).map(x=>x.trim()).filter(Boolean).filter((x,i,a)=>a.indexOf(x)===i).slice(0,12);
+}
+
 function doAddMistake(){
   const box = $('#misBox');
   const raw = (box && box.value || '').trim();
   if(!raw){ toast('先输入错题'); return; }
   const defSub = S.settings.lastSubject || '物理';
   const book = (($('#addBook') && $('#addBook').value) || '').trim();
+  const topic = (($('#addTopic') && $('#addTopic').value) || '').trim();
+  const derived = splitDerived(($('#addDerived') && $('#addDerived').value) || '');
   if(book){
     S.settings.lastBook = S.settings.lastBook || {};
     S.settings.lastBook[defSub] = book;
+  }
+  if(topic){
+    S.settings.lastTopic = S.settings.lastTopic || {};
+    S.settings.lastTopic[defSub] = topic;
   }
   const ok = [];
   let bad = 0;
@@ -1983,11 +2025,22 @@ function doAddMistake(){
     if(!p || !p.subject || !p.text){ bad++; return; }
     ok.push(p);
   });
-  ok.forEach((p,i)=>S.mistakes.push(makeMistake(p.subject, p.text, p.answer, p.tag, '', i===0?addImg:'', book)));
+  let dupN = 0;
+  const fresh = ok.filter(p=>{
+    const loc = parseLoc(p.text);
+    const useBook = book || loc.book || '';
+    if(!loc.page) return true;
+    const hit = S.mistakes.some(m=>!m.done && m.subject===p.subject && (m.book||'')===useBook
+      && m.page===loc.page && String(m.no||'')===String(loc.no||''));
+    if(hit){ dupN++; return false; }
+    return true;
+  });
+  fresh.forEach((p,i)=>S.mistakes.push(makeMistake(p.subject, p.text, p.answer, p.tag, '', i===0?addImg:'', book, topic, derived)));
   save();
   closeSheet();
   renderAll();
-  let msg = `已录入 ${ok.length} 道`;
+  let msg = `已录入 ${fresh.length} 道`;
+  if(dupN) msg += `，跳过重复 ${dupN}`;
   if(bad) msg += `，${bad} 行无法识别`;
   toast(msg);
 }
@@ -2010,13 +2063,13 @@ function resizeImage(file, cb){
   r.onload = ()=>{
     const img = new Image();
     img.onload = ()=>{
-      const max = 1000;
+      const max = 900;
       const k = Math.min(1, max / Math.max(img.width, img.height));
       const cv = document.createElement('canvas');
       cv.width = Math.max(1, Math.round(img.width*k));
       cv.height = Math.max(1, Math.round(img.height*k));
       cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-      cb(cv.toDataURL('image/jpeg', 0.72));
+      cb(cv.toDataURL('image/jpeg', 0.62));
     };
     img.onerror = ()=>toast('图片读取失败');
     img.src = r.result;
@@ -2128,13 +2181,18 @@ function doneMrev(){
 }
 
 /* ---------- 考前清单（可设入选条件） ---------- */
-let examSel = {subject:'', book:'', only:'all', rounds:'all'};
+let examSel = {subject:'', book:'', only:'all', rounds:'all', range:'all', topic:''};
 function examListItems(sel){
   const s = sel || examSel;
   return S.mistakes.filter(m=>{
     if(m.done) return false;
     if(s.subject && m.subject !== s.subject) return false;
     if(s.book && (m.book||'') !== s.book) return false;
+    if(s.topic && (m.topic||'') !== s.topic) return false;
+    if(s.range && s.range !== 'all'){
+      const days = Number(s.range) || 0;
+      if(days && (m.created||'') < addD(today(), -(days-1))) return false;
+    }
     if(s.only==='fav' && !m.fav) return false;
     if(s.only==='stuck' && (m.failCount||0) < 2) return false;
     if(s.only==='overdue' && !(overdueDays(m) > 0)) return false;
@@ -2144,6 +2202,16 @@ function examListItems(sel){
     if(s.rounds==='late' && round < 3) return false;
     return true;
   }).sort(misSort);
+}
+function countBy(list, getter){
+  const cnt = {};
+  list.forEach(m=>{
+    const v = getter(m);
+    if(!v) return;
+    if(Array.isArray(v)) v.forEach(x=>{ if(x) cnt[x] = (cnt[x]||0)+1; });
+    else cnt[v] = (cnt[v]||0)+1;
+  });
+  return Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]).map(k=>({k, n:cnt[k]}));
 }
 function locShort(m){
   if(m.page) return 'P'+m.page+(m.no?'-'+m.no:'');
@@ -2158,23 +2226,37 @@ function examListText(){
     const key = m.subject + (m.book ? ' · '+m.book : '');
     (groups[key] = groups[key] || []).push(m);
   });
-  return Object.keys(groups).map(k=>`【${k}】`+
+  const lines = Object.keys(groups).map(k=>`【${k}】`+
     groups[k].map(m=>`${locShort(m)}（第${Math.min((m.stage||0)+1, mistakeGaps().length)}/${mistakeGaps().length}遍）`).join('　')
-  ).join('\n');
+  );
+  const tSum = countBy(list, m=>m.topic||'');
+  const dSum = countBy(list, m=>m.derived||[]);
+  if(tSum.length) lines.push('', '— 知识点 —', tSum.map(x=>x.k+'（'+x.n+'）').join('、'));
+  if(dSum.length) lines.push('', '— 衍生知识点 —', dSum.map(x=>x.k+'（'+x.n+'）').join('、'));
+  return lines.join('\n');
 }
 function openExamList(){
-  examSel = {subject:'', book:'', only:'all', rounds:'all'};
+  examSel = {subject:'', book:'', only:'all', rounds:'all', range:'all', topic:''};
   renderExamSheet();
 }
 function renderExamSheet(){
   const books = [...new Set(S.mistakes.filter(m=>!m.done && m.book).map(m=>m.book))].sort();
-  const n = examListItems().length;
+  const topicAll = countBy(S.mistakes.filter(m=>!m.done && m.topic), m=>m.topic).slice(0,8);
+  const items = examListItems();
+  const n = items.length;
+  const tSum = countBy(items, m=>m.topic||'').slice(0,6);
+  const dSum = countBy(items, m=>m.derived||[]).slice(0,8);
   const conds = [['all','全部未完成'],['fav','只看收藏'],['stuck','卡住≥2次'],['overdue','只看逾期'],['due','今天到期']];
   const rounds = [['all','全部遍次'],['early','第1-2遍'],['late','第3-4遍']];
+  const ranges = [['7','近 7 天'],['30','近 30 天'],['90','近 90 天'],['all','全部时间']];
   $('#sheetTitle').textContent = '考前清单';
   $('#sheetBody').innerHTML = `
-    <p class="tip">先设入选条件，再生成清单。</p>
-    <div class="sect" style="margin:10px 0 8px"><h3>科目</h3></div>
+    <p class="tip">先设入选条件，生成时会附上知识点与衍生知识点总结。</p>
+    <div class="sect" style="margin:10px 0 8px"><h3>时间范围</h3></div>
+    <div class="chips">
+      ${ranges.map(([v,l])=>`<button class="chip sm ${examSel.range===v?'on':''}" data-exs="range" data-v="${v}">${l}</button>`).join('')}
+    </div>
+    <div class="sect" style="margin:14px 0 8px"><h3>科目</h3></div>
     <div class="chips">
       <button class="chip sm ${examSel.subject?'':'on'}" data-exs="subject" data-v="">全部</button>
       ${SUBJECTS.map(s=>`<button class="chip sm ${examSel.subject===s?'on':''}" data-exs="subject" data-v="${s}">${s}</button>`).join('')}
@@ -2184,6 +2266,11 @@ function renderExamSheet(){
       <button class="chip sm ${examSel.book?'':'on'}" data-exs="book" data-v="">全部书</button>
       ${books.map(b=>`<button class="chip sm ${examSel.book===b?'on':''}" data-exs="book" data-v="${esc(b)}">${esc(b)}</button>`).join('')}
     </div>`:''}
+    ${topicAll.length?`<div class="sect" style="margin:14px 0 8px"><h3>知识点</h3></div>
+    <div class="chips">
+      <button class="chip sm ${examSel.topic?'':'on'}" data-exs="topic" data-v="">全部</button>
+      ${topicAll.map(x=>`<button class="chip sm ${examSel.topic===x.k?'on':''}" data-exs="topic" data-v="${esc(x.k)}">${esc(x.k)} ${x.n}</button>`).join('')}
+    </div>`:''}
     <div class="sect" style="margin:14px 0 8px"><h3>条件</h3></div>
     <div class="chips">
       ${conds.map(([v,l])=>`<button class="chip sm ${examSel.only===v?'on':''}" data-exs="only" data-v="${v}">${l}</button>`).join('')}
@@ -2192,7 +2279,12 @@ function renderExamSheet(){
     <div class="chips">
       ${rounds.map(([v,l])=>`<button class="chip sm ${examSel.rounds===v?'on':''}" data-exs="rounds" data-v="${v}">${l}</button>`).join('')}
     </div>
-    <button class="btn primary" style="width:100%;margin-top:18px" data-act="genExamList">生成清单（${n} 道）</button>
+    ${n?`<div style="margin-top:14px;background:var(--bg);border-radius:12px;padding:12px;font-size:12.5px;line-height:1.9;color:var(--ink2)">
+      ${tSum.length?`<div><b>知识点</b>　${tSum.map(x=>esc(x.k)+'（'+x.n+'）').join('、')}</div>`:''}
+      ${dSum.length?`<div><b>衍生</b>　${dSum.map(x=>esc(x.k)+'（'+x.n+'）').join('、')}</div>`:''}
+      ${!tSum.length&&!dSum.length?'<div style="color:var(--ink3)">这批题还没标知识点，可在编辑里补</div>':''}
+    </div>`:''}
+    <button class="btn primary" style="width:100%;margin-top:16px" data-act="genExamList">生成清单（${n} 道）</button>
     <div id="examListOut"></div>`;
   openSheet();
   window.__examList = '';
@@ -2214,9 +2306,11 @@ function openMistakeDetail(id){
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
       <span class="subj s${subjIdx(m.subject)}">${esc(m.subject)}</span>
       <span style="font-weight:650">${esc(locLabel(m))}</span>
+      ${m.topic?`<span class="tag">${esc(m.topic)}</span>`:''}
       ${m.cause?`<span class="pill">${esc(m.cause)}</span>`:''}
       ${m.tag?`<span class="tag">#${esc(m.tag)}</span>`:''}
     </div>
+    ${(m.derived||[]).length?`<div style="margin:-2px 0 10px">${m.derived.map(d=>`<span class="tag" style="margin-right:4px">衍生：${esc(d)}</span>`).join('')}</div>`:''}
     <div class="mtext" style="font-size:15px">${esc(m.text)}</div>
     ${m.img?`<img src="${m.img}" style="width:100%;border-radius:12px;margin-top:10px">`:''}
     ${m.answer?`<div style="margin-top:10px;font-size:13.5px;color:var(--ink2);background:var(--bg);border-radius:12px;padding:12px;white-space:pre-wrap">${esc(m.answer)}</div>`:''}
@@ -2257,7 +2351,11 @@ function openEditMistake(id){
       ${SUBJECTS.map(s=>`<button class="chip sm ${m.subject===s?'on':''}" data-ep="subject" data-v="${s}">${s}</button>`).join('')}
     </div>
     <label class="fl">题目 / 位置<textarea id="epText">${esc(m.text)}</textarea></label>
-    <label class="fl">哪本书（可留空）<input id="epBook" value="${esc(m.book||'')}" placeholder="必刷题 / 五三 / 单元卷"></label>
+    <label class="fl">哪本书（可留空）<input id="epBook" list="epBkList" value="${esc(m.book||'')}" placeholder="必刷题 / 五三 / 单元卷"></label>
+    ${datalist('epBkList', uniqueBooks())}
+    <label class="fl">知识点（可留空）<input id="epTopic" list="epTpList" value="${esc(m.topic||'')}" placeholder="立体几何 / 函数单调性"></label>
+    ${datalist('epTpList', uniqueTopics())}
+    <label class="fl">衍生知识点（逗号分隔，可留空）<input id="epDerived" value="${esc((m.derived||[]).join('、'))}" placeholder="二面角、向量法"></label>
     <label class="fl">备注（可留空）<textarea id="epAnswer">${esc(m.answer||'')}</textarea></label>
     <div class="chips" style="margin:2px 0 12px" id="epCause">
       <button class="chip sm ${!m.cause?'on':''}" data-ep="cause" data-v="">未分类</button>
@@ -2287,6 +2385,8 @@ function saveMistake(id){
   m.text = text;
   const loc = parseLoc(text);
   m.book = ($('#epBook').value||'').trim() || loc.book;
+  m.topic = ($('#epTopic').value||'').trim();
+  m.derived = splitDerived($('#epDerived').value);
   m.page = loc.page; m.no = loc.no;
   m.answer = ($('#epAnswer').value||'').trim();
   m.tag = ($('#epTag').value||'').trim().replace(/^#/,'');
@@ -2780,7 +2880,7 @@ document.addEventListener('click', e=>{
   if(pk){ togglePick(Number(pk.dataset.pick)); return; }
 
   const mf = e.target.closest('[data-misf]');
-  if(mf){ misFilter[mf.dataset.misf] = mf.dataset.v; renderMistakes(); return; }
+  if(mf){ misFilter[mf.dataset.misf] = mf.dataset.v; misPage = 1; renderMistakes(); return; }
 
   const asub = e.target.closest('[data-addsub]');
   if(asub){
@@ -2789,11 +2889,13 @@ document.addEventListener('click', e=>{
     document.querySelectorAll('#addSubj .chip').forEach(b=>b.classList.toggle('on', b.dataset.addsub===S.settings.lastSubject));
     const bi = $('#addBook');
     if(bi) bi.value = (S.settings.lastBook||{})[S.settings.lastSubject] || '';
+    const ti = $('#addTopic');
+    if(ti) ti.value = (S.settings.lastTopic||{})[S.settings.lastSubject] || '';
     return;
   }
 
   const bk = e.target.closest('[data-bookfilter]');
-  if(bk){ misFilter.book = bk.dataset.bookfilter || ''; renderMistakes(); return; }
+  if(bk){ misFilter.book = bk.dataset.bookfilter || ''; misPage = 1; renderMistakes(); return; }
 
   const exs = e.target.closest('[data-exs]');
   if(exs){ examSel[exs.dataset.exs] = exs.dataset.v; renderExamSheet(); return; }
@@ -2810,7 +2912,7 @@ document.addEventListener('click', e=>{
   if(fav){ toggleFav(fav.dataset.fav); return; }
 
   const ff = e.target.closest('[data-favfilter]');
-  if(ff){ misFilter.fav = !misFilter.fav; renderMistakes(); return; }
+  if(ff){ misFilter.fav = !misFilter.fav; misPage = 1; renderMistakes(); return; }
 
   const tf = e.target.closest('[data-tagfilter]');
   if(tf){ tagFilter = tf.dataset.tagfilter || ''; renderWords(); return; }
@@ -2899,11 +3001,14 @@ document.addEventListener('click', e=>{
     case 'favMistake': toggleFav(t.dataset.id); openMistakeDetail(t.dataset.id); break;
     case 'quitMrev': mrev=null; goHome(); break;
     case 'doneMrev': doneMrev(); break;
+    case 'misMore': misPage++; renderMisList(); break;
     case 'toggleDone': misShowDone = !misShowDone; renderMisList(); break;
     case 'editMistake': openEditMistake(t.dataset.id); break;
     case 'saveMistake': saveMistake(t.dataset.id); break;
     case 'memNow': closeSheet(); startMrev([t.dataset.id]); break;
     case 'pickImg': pickImage(data=>{
+      const used = (S.mistakes||[]).reduce((s,m)=>s+(m.img?m.img.length:0),0);
+      if(used + data.length > 1500000){ toast('图片已占满存储（约 1.5MB），可先删除旧图'); return; }
       if(imgTarget==='add'){
         addImg = data;
         const box = $('#addImgBox');
