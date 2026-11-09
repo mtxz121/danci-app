@@ -73,6 +73,17 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
+      - name: Verify APK signature
+        run: |
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | tee /tmp/certs.txt
+          FP=$(grep -i "SHA-256 digest" /tmp/certs.txt | head -1 | awk '{print $NF}' | tr -d ':' | tr 'A-F' 'a-f')
+          echo "APK SHA-256: $FP"
+          if [ "$FP" != "dcf8cb58190ac0fb52e0def639bbb1c29b7275825a808fe5b404c6ff6ece63dc" ]; then
+            echo "签名指纹不一致，手机无法覆盖安装！"
+            exit 1
+          fi
+
       - name: Rename APK
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk "温故-v${APP_VERSION}.apk"
