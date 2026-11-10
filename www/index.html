@@ -93,7 +93,7 @@ input,textarea{font-family:inherit;font-size:inherit;color:inherit}
 .bigcard{flex:1;background:var(--card);border-radius:24px;border:1px solid var(--line);
   box-shadow:var(--shadow);display:flex;flex-direction:column;justify-content:center;
   align-items:center;padding:28px 22px;min-height:0;position:relative}
-.bigcard.learning{justify-content:flex-start;align-items:stretch}
+.bigcard.learning{justify-content:flex-start;align-items:stretch;overflow-y:auto}
 .word{font-size:40px;font-weight:750;letter-spacing:-.5px;text-align:center;word-break:break-word;line-height:1.2}
 .word.small{font-size:28px}
 .phon{color:var(--ink3);font-size:14px;margin-top:8px;text-align:center}
@@ -1246,9 +1246,9 @@ function gradeBar(it, rec){
   const p1 = fsrsPreview(it,1), p2 = fsrsPreview(it,2), p3 = fsrsPreview(it,3);
   const lab = (p,g)=> g===1 ? '明天再见' : (p.ivl<=1 ? '1 天后' : '约 '+p.ivl+' 天');
   return `<div class="gradebar">
-    <button class="gbtn bad ${rec===1?'rec':''}" data-grade="1"><b>忘记</b><span>${lab(p1,1)}</span></button>
-    <button class="gbtn warn ${rec===2?'rec':''}" data-grade="2"><b>模糊</b><span>${lab(p2,2)}</span></button>
-    <button class="gbtn ok ${rec===3?'rec':''}" data-grade="3"><b>记得</b><span>${lab(p3,3)}</span></button>
+    <button class="gbtn bad ${rec===1?'rec':''}" data-grade="1" data-gid="${it.id}"><b>忘记</b><span>${lab(p1,1)}</span></button>
+    <button class="gbtn warn ${rec===2?'rec':''}" data-grade="2" data-gid="${it.id}"><b>模糊</b><span>${lab(p2,2)}</span></button>
+    <button class="gbtn ok ${rec===3?'rec':''}" data-grade="3" data-gid="${it.id}"><b>记得</b><span>${lab(p3,3)}</span></button>
   </div>`;
 }
 function prevBtn(){
@@ -1435,10 +1435,14 @@ function studyCheck(){
   save();
   renderStudy();
 }
-function studyGrade(g){
+function studyGrade(g, id){
   if(!exam || !exam.instant) return;
   const it = byId(exam.ids[exam.ptr]);
   if(!it) return;
+  if(id && id !== it.id) return;   // 防止连点把评分打到下一张
+  const now = Date.now();
+  if(exam.gradeLock && now - exam.gradeLock < 260) return;
+  exam.gradeLock = now;
   const a = studyAnswer(it);
   let grade = Number(g)||3;
   // 拼写正确且 8 秒内答出 → 按「太简单」排期
@@ -1719,6 +1723,7 @@ function prevQ(){
 }
 function nextQ(){
   if(!exam || exam.instant) return;
+  if(exam.navLock && Date.now()-exam.navLock < 250) return;
   const it = byId(exam.ids[exam.ptr]);
   if(it && exam.ans){
     const a = exam.ans[it.id];
@@ -1737,6 +1742,7 @@ function nextQ(){
   }
   if(exam.ptr+1 >= exam.ids.length){ gradeExam(); return; }
   stampAnswer();
+  exam.navLock = Date.now();
   exam.ptr++;
   if(exam.mode==='exam') S.exam = exam;
   save();
@@ -1748,7 +1754,7 @@ function applyReview(it,res){
 }
 
 function gradeExam(){
-  if(!exam) return;
+  if(!exam || exam.done) return;
   stampAnswer();
   const blank = exam.ids.filter(id=>{
     const a = exam.ans[id];
@@ -3634,7 +3640,7 @@ document.addEventListener('click', e=>{
   if(pk){ togglePick(Number(pk.dataset.pick)); return; }
 
   const gb = e.target.closest('[data-grade]');
-  if(gb){ studyGrade(Number(gb.dataset.grade)); return; }
+  if(gb){ studyGrade(Number(gb.dataset.grade), gb.dataset.gid); return; }
 
   const mf = e.target.closest('[data-misf]');
   if(mf){ misFilter[mf.dataset.misf] = mf.dataset.v; misPage = 1; renderMistakes(); return; }
