@@ -1185,7 +1185,7 @@ function kbInput(k){
   if(txt.length > 48) return;
   st.text = txt;
   paintTyped($('#typeBox'), st.text, '用下面的键盘输入');
-  if(exam){
+  if(exam && exam.mode==='review'){
     clearTimeout(kbSaveT);
     kbSaveT = setTimeout(()=>{ S.exam = exam; save(); }, 800);
   }
@@ -1262,6 +1262,10 @@ function startReview(){
     exam.ptr = exam.ptr || 0;
     exam.instant = true;
     exam.stats = exam.stats || {again:0,hard:0,good:0,easy:0,right:0};
+    Object.keys(exam.ans||{}).forEach(k=>{
+      const x = exam.ans[k];
+      if(x && x.phase!=='done'){ x.t0 = Date.now(); x.played = false; }
+    });
   }else{
     const paper = buildPaper();
     if(!paper.ids.length){
@@ -2029,7 +2033,7 @@ function renderHard(){
   $('#hardCount').textContent = list.length + ' 个';
   const body = $('#hardBody');
   if(!list.length){
-    body.innerHTML = `<div class="empty"><b>还没有难词</b>错 2 次以上的词会自动收进这里</div>`;
+    body.innerHTML = `<div class="empty"><b>还没有难词</b>错 2 次或反复遗忘的词会自动收进这里</div>`;
     return;
   }
   body.innerHTML = `
@@ -2647,14 +2651,12 @@ function renderMrev(){
 
   if(!left){
     const c = mrev.counts;
-    const ms = Date.now() - mrev.startedAt;
-    const mm = Math.floor(ms/60000), ss = Math.round((ms%60000)/1000);
     box.innerHTML = `
       <div class="bigcard" style="justify-content:center">
         <div style="text-align:center">
           <div style="font-size:42px;font-weight:750;color:var(--brand)">${c.ok}/${mrev.total}</div>
           <div class="phon">这轮做完了</div>
-          <div style="font-size:12.5px;color:var(--ink3);margin-top:10px">还不会 ${c.bad} 道（明天再来）· 用时 ${mm} 分 ${ss} 秒</div>
+          <div style="font-size:12.5px;color:var(--ink3);margin-top:10px">还不会 ${c.bad} 道（明天再来）· 用时 ${fmtDur(Date.now()-mrev.startedAt)}</div>
         </div>
       </div>
       <div class="actions"><button class="btn primary" data-act="doneMrev">完成</button></div>`;
