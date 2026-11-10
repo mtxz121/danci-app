@@ -401,7 +401,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
-let APP_VERSION = '1.7';        // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '1.8';        // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -1661,6 +1661,7 @@ const MIS_PAGE = 50;
 let misShowDone = false;
 let editM = {subject:'物理', cause:'', img:''};
 let addImg = '';
+let addCause = '';
 let imgTarget = 'add';
 
 /* ---------- 位置解析：练习册十一页5 → P11-5 ---------- */
@@ -1864,9 +1865,10 @@ function renderMistakes(){
     ${filtered?`<button class="btn primary" style="height:40px;font-size:14px;margin-bottom:12px" data-act="startMrevFiltered">
       按当前筛选复习 ${filteredActive().length} 道</button>`:''}
 
-    <div style="display:flex;gap:8px;margin-bottom:14px">
-      <button class="btn" data-act="examList" style="height:38px;font-size:13.5px">考前清单</button>
-      <button class="btn" data-act="startMrev" style="height:38px;font-size:13.5px">按到期复习</button>
+    <div style="display:flex;gap:6px;margin-bottom:14px">
+      <button class="btn" data-act="examList" style="height:38px;font-size:12.5px">考前清单</button>
+      <button class="btn" data-act="derivedSum" style="height:38px;font-size:12.5px">衍生总结</button>
+      <button class="btn" data-act="startMrev" style="height:38px;font-size:12.5px">按到期复习</button>
     </div>
 
     <div class="grid2" style="grid-template-columns:repeat(3,1fr);margin:6px 0 16px">${stats}</div>
@@ -1949,6 +1951,7 @@ function datalist(id, arr){
 /* ---------- 录入 ---------- */
 function openAddMistake(){
   addImg = '';
+  addCause = '';
   imgTarget = 'add';
   const last = S.settings.lastSubject || '物理';
   $('#sheetTitle').textContent = '录入错题';
@@ -1968,7 +1971,11 @@ function openAddMistake(){
     ${datalist('tpList', uniqueTopics())}
     <input id="addDerived" placeholder="衍生知识点，用顿号或逗号分隔（可留空）"
       style="width:100%;height:38px;border-radius:10px;border:1.5px solid var(--line);background:var(--bg);
-      padding:0 12px;outline:none;font-size:13.5px;margin:0 0 10px">
+      padding:0 12px;outline:none;font-size:13.5px;margin:0 0 8px">
+    <div class="chips" style="margin:0 0 10px" id="addCause">
+      <button class="chip sm on" data-addcause="">错因：未分类</button>
+      ${CAUSES.map(c=>`<button class="chip sm" data-addcause="${c}">${c}</button>`).join('')}
+    </div>
     <textarea id="misBox" placeholder="一行一道，写清位置&#10;&#10;练习册十一页5&#10;卷子第三题第(2)问"></textarea>
     <p class="tip">· 同一科有多本书时，先在上面填书名，位置就记成「必刷题 P11-5」<br>
       · 不写科目就用上面选中的（会记住上次）<br>
@@ -2035,7 +2042,7 @@ function doAddMistake(){
     if(hit){ dupN++; return false; }
     return true;
   });
-  fresh.forEach((p,i)=>S.mistakes.push(makeMistake(p.subject, p.text, p.answer, p.tag, '', i===0?addImg:'', book, topic, derived)));
+  fresh.forEach((p,i)=>S.mistakes.push(makeMistake(p.subject, p.text, p.answer, p.tag, addCause, i===0?addImg:'', book, topic, derived)));
   save();
   closeSheet();
   renderAll();
@@ -2291,9 +2298,63 @@ function renderExamSheet(){
 }
 function copyList(){
   const txt = window.__examList || examListText();
+  copyText(txt);
+}
+
+function copyText(txt){
   try{
     navigator.clipboard.writeText(txt).then(()=>toast('已复制')).catch(()=>toast('复制失败，长按选择'));
   }catch(e){ toast('复制失败，长按选择'); }
+}
+
+/* ---------- 衍生知识点总结 ---------- */
+let sumSel = {range:'30', subject:''};
+function openDerivedSummary(){
+  sumSel = {range:'30', subject:''};
+  renderSummarySheet();
+}
+function summaryItems(){
+  const from = sumSel.range==='all' ? '' : addD(today(), -(Number(sumSel.range)-1));
+  return S.mistakes.filter(m=>!m.done
+    && (!sumSel.subject || m.subject===sumSel.subject)
+    && (!from || (m.created||'') >= from));
+}
+function summaryText(){
+  const list = summaryItems();
+  const d = countBy(list, m=>m.derived||[]);
+  const t = countBy(list, m=>m.topic||'');
+  const range = sumSel.range==='all' ? '全部时间' : `近 ${sumSel.range} 天`;
+  const lines = [`${range} · ${sumSel.subject||'全部科目'}（${list.length} 道错题）`];
+  if(t.length) lines.push('', '— 知识点 —', t.map(x=>`${x.k}（${x.n}）`).join('、'));
+  if(d.length) lines.push('', '— 衍生知识点 —', d.map(x=>`${x.k}（${x.n}）`).join('、'));
+  return lines.join('\n');
+}
+function renderSummarySheet(){
+  const list = summaryItems();
+  const d = countBy(list, m=>m.derived||[]);
+  const t = countBy(list, m=>m.topic||'');
+  const ranges = [['7','近 7 天'],['30','近 30 天'],['90','近 90 天'],['all','全部']];
+  window.__sumText = summaryText();
+  $('#sheetTitle').textContent = '衍生知识点总结';
+  $('#sheetBody').innerHTML = `
+    <div class="chips" style="margin:2px 0 10px">
+      ${ranges.map(([v,l])=>`<button class="chip sm ${sumSel.range===v?'on':''}" data-sums="range" data-v="${v}">${l}</button>`).join('')}
+    </div>
+    <div class="chips" style="margin:0 0 14px">
+      <button class="chip sm ${sumSel.subject?'':'on'}" data-sums="subject" data-v="">全部</button>
+      ${SUBJECTS.map(s=>`<button class="chip sm ${sumSel.subject===s?'on':''}" data-sums="subject" data-v="${s}">${s}</button>`).join('')}
+    </div>
+    <p class="tip">统计 ${list.length} 道未完成错题</p>
+    <div class="sect" style="margin:14px 0 8px"><h3>知识点</h3></div>
+    <div class="chips" style="margin-bottom:14px">
+      ${t.length?t.map(x=>`<span class="chip sm">${esc(x.k)} ${x.n}</span>`).join(''):'<span class="tip" style="margin:0">还没有标知识点</span>'}
+    </div>
+    <div class="sect" style="margin:6px 0 8px"><h3>衍生知识点</h3></div>
+    <div class="chips" style="margin-bottom:16px">
+      ${d.length?d.map(x=>`<span class="chip sm">${esc(x.k)} ${x.n}</span>`).join(''):'<span class="tip" style="margin:0">还没有标衍生知识点</span>'}
+    </div>
+    <button class="btn" style="width:100%" data-act="copySummary">复制总结</button>`;
+  openSheet();
 }
 
 /* ---------- 详情 / 编辑 ---------- */
@@ -2894,11 +2955,21 @@ document.addEventListener('click', e=>{
     return;
   }
 
+  const ac = e.target.closest('[data-addcause]');
+  if(ac){
+    addCause = ac.dataset.addcause || '';
+    document.querySelectorAll('#addCause .chip').forEach(b=>b.classList.toggle('on', b.dataset.addcause===addCause));
+    return;
+  }
+
   const bk = e.target.closest('[data-bookfilter]');
   if(bk){ misFilter.book = bk.dataset.bookfilter || ''; misPage = 1; renderMistakes(); return; }
 
   const exs = e.target.closest('[data-exs]');
   if(exs){ examSel[exs.dataset.exs] = exs.dataset.v; renderExamSheet(); return; }
+
+  const sms = e.target.closest('[data-sums]');
+  if(sms){ sumSel[sms.dataset.sums] = sms.dataset.v; renderSummarySheet(); return; }
 
   const ep = e.target.closest('[data-ep]');
   if(ep){
@@ -2982,6 +3053,8 @@ document.addEventListener('click', e=>{
     case 'mrevOk': markMrev('ok', t.dataset.id); break;
     case 'mrevBad': markMrev('bad', t.dataset.id); break;
     case 'examList': openExamList(); break;
+    case 'derivedSum': openDerivedSummary(); break;
+    case 'copySummary': copyText(window.__sumText || summaryText()); break;
     case 'genExamList': {
       const txt = examListText();
       if(!txt){ toast('没有符合条件的错题'); break; }
