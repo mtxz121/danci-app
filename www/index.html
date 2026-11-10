@@ -791,7 +791,7 @@ function legacyFsrs(it){
   const s = Math.max(1, GAPS[Math.min(st, GAPS.length-1)] || 1);
   const d = fsrsClampD(5 + Math.min(4, Number(it.errCount)||0));
   const due = /^\d{4}-\d{2}-\d{2}$/.test(String(it.nextDate||'')) ? it.nextDate : addD(t,1);
-  return {d, s, reps:Math.max(1, Number(it.officialTestCount)||1), lapses:Math.min(9, st),
+  return {d, s, reps:Math.max(1, Number(it.officialTestCount)||1), lapses:Math.min(9, Number(it.errCount)||0),
           state:2, last:Date.now()-s*86400000, due, ivl:s, lastGrade:3};
 }
 /** 只算不写：预测某个评分后的间隔 */
