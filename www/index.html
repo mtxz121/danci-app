@@ -70,7 +70,7 @@ input,textarea{font-family:inherit;font-size:inherit;color:inherit}
 .mini .k{font-size:12px;color:var(--ink3);margin-top:3px}
 .sect{display:flex;align-items:center;justify-content:space-between;margin:18px 0 10px}
 .sect h3{font-size:14px;font-weight:650;margin:0;color:var(--ink2)}
-.sect button{font-size:12.5px;color:var(--brand)}
+.sect button{font-size:12.5px;color:var(--brand);white-space:nowrap;flex:0 0 auto}
 
 /* ---------- 列表 ---------- */
 .item{display:flex;align-items:center;gap:12px;padding:13px 14px;background:var(--card);
@@ -235,7 +235,7 @@ body.dark #tabbar{background:rgba(24,27,34,.94)}
 .bars i b{display:block;width:100%;background:var(--brand);border-radius:3px}
 
 /* ---------- 标签 / 科目 ---------- */
-.chip.sm{padding:7px 11px;font-size:13px;border-radius:999px}
+.chip.sm{padding:7px 11px;font-size:13px;border-radius:999px;white-space:nowrap}
 .subj{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
   background:var(--brandSoft);color:var(--brand);margin-right:6px;flex:0 0 auto}
 .s0{background:#e8f0ff;color:#2b6cf6}.s1{background:#e9f7ef;color:#0f9d58}
@@ -289,6 +289,11 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 .srow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;
   border-bottom:1px solid var(--line);cursor:pointer}
 .srow:last-child{border-bottom:none}
+.bookcover{width:38px;height:38px;border-radius:12px;flex:0 0 auto;
+  background:linear-gradient(135deg,var(--brand),#6f5cf5);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-weight:750;font-size:16px}
+.rootline{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:10px;width:100%}
+.rootline .tag{font-size:11px;padding:3px 8px;white-space:normal;line-height:1.5}
 </style>
 </head>
 <body>
@@ -433,7 +438,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
-let APP_VERSION = '2.0.1';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.1';        // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -452,7 +457,8 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:0, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, fsrsDR:0.9
+    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, fsrsDR:0.9,
+    book:'', bookName:''
   },
   clockOffset: 0,
   items: [],
@@ -671,6 +677,46 @@ function dictLookup(word){
 }
 
 /* ============================================================
+   5.5 词书与词根（build_books.py 生成，数据来自 ECDICT MIT）
+   ============================================================ */
+let BOOKS = null, booksLoading = null, ROOTS = null, rootsLoading = null;
+function loadBooks(){
+  if(BOOKS) return Promise.resolve(BOOKS);
+  if(!booksLoading){
+    booksLoading = fetch('books.json').then(r=>r.json())
+      .then(d=>{ BOOKS = d && d.books ? d : {books:[],words:{}}; return BOOKS; })
+      .catch(()=>{ BOOKS = {books:[],words:{}}; return BOOKS; });
+  }
+  return booksLoading;
+}
+function loadRoots(){
+  if(ROOTS) return Promise.resolve(ROOTS);
+  if(!rootsLoading){
+    rootsLoading = fetch('roots.json').then(r=>r.json())
+      .then(d=>{ ROOTS = d || {}; return ROOTS; })
+      .catch(()=>{ ROOTS = {}; return ROOTS; });
+  }
+  return rootsLoading;
+}
+function bookById(id){
+  return (BOOKS && (BOOKS.books||[]).find(b=>b.id===id)) || null;
+}
+function currentBook(){ return S.settings.book ? bookById(S.settings.book) : null; }
+function currentBookName(){
+  return S.settings.bookName || (currentBook() ? currentBook().name : '');
+}
+function rootsFor(word){
+  if(!ROOTS) return [];
+  return ROOTS[String(word||'').trim().toLowerCase()] || [];
+}
+function rootLine(word){
+  const arr = rootsFor(word);
+  if(!arr.length) return '';
+  return `<div class="rootline">${arr.map(r=>
+    `<span class="tag">${esc(r.r)}${r.m?' · '+esc(r.m):''}</span>`).join('')}</div>`;
+}
+
+/* ============================================================
    6. 发音（安卓 WebView 没有 speechSynthesis，走联网音频）
    单词 → 有道真人音；整句 → 百度 TTS
    ============================================================ */
@@ -728,6 +774,7 @@ function makeItem(en, zh, tags){
   return {
     id:'w'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
     en, zh, tags:tags||[],
+    book:'', bookName:'',
     created:t,
     learned:false, learnRounds:0,
     stage:0, maxStage:0, nextDate:t,
@@ -743,7 +790,44 @@ function pushHist(it, rec){
   it.history.push(rec);
   if(it.history.length>40) it.history = it.history.slice(-40);
 }
-function newItems(){ return S.items.filter(i=>!i.learned && i.status==='active'); }
+function newItems(){
+  const bk = S.settings.book;
+  return S.items.filter(i=>!i.learned && i.status==='active')
+    .sort((a,b)=> ((a.book===bk?0:1)-(b.book===bk?0:1)) ||
+      String(a.created||'').localeCompare(String(b.created||'')));
+}
+function bookStats(bk){
+  if(!bk) return {inLib:0, learned:0};
+  const list = S.items.filter(i=>i.book===bk.id);
+  return {inLib:list.length, learned:list.filter(i=>i.learned).length};
+}
+let bookTopLock = false;
+async function topUpFromBook(n){
+  await loadBooks();
+  const bk = currentBook();
+  n = Math.max(0, Number(n)||0);
+  if(!bk || !n || bookTopLock) return 0;
+  bookTopLock = true;
+  try{
+    const have = new Set(S.items.map(i=>normEn(i.en)));
+    const picked = [];
+    for(const w of bk.words){
+      if(picked.length>=n) break;
+      const k = normEn(w);
+      if(!k || have.has(k)) continue;
+      have.add(k); picked.push(w);
+    }
+    picked.forEach(w=>{
+      const meta = (BOOKS.words && BOOKS.words[w]) || ['',''];
+      const zh = meta[1] || dictSensesOf(w).slice(0,2).join('；') || '（待补释义）';
+      const it = makeItem(w, zh, [bk.name]);
+      it.book = bk.id; it.bookName = bk.name;
+      S.items.push(it);
+    });
+    if(picked.length) save();
+    return picked.length;
+  }finally{ bookTopLock = false; }
+}
 function dueDate(it){ return (it.fsrs && it.fsrs.due) || it.nextDate || ''; }
 function dueItems(){
   const t = today();
@@ -777,13 +861,42 @@ function itemRetention(it){
   const lastD = fmt(new Date(f.last));
   return fsrsR(Math.max(0, diffD(lastD, today())), f.s);
 }
+/** 补齐旧备份/外部数据缺失的字段，避免详情页出现 undefined */
+function normalizeItem(it){
+  if(!it || !it.en) return it;
+  const t = today();
+  if(!String(it.zh||'').trim()) it.zh = '（待补释义）';
+  if(it.created == null) it.created = t;
+  if(it.status == null) it.status = 'active';
+  if(it.learned == null) it.learned = false;
+  if(it.learnRounds == null) it.learnRounds = 0;
+  if(it.stage == null) it.stage = 0;
+  if(it.maxStage == null) it.maxStage = 0;
+  if(it.streak == null) it.streak = 0;
+  if(it.errCount == null) it.errCount = 0;
+  if(it.totalAnswerCount == null) it.totalAnswerCount = 0;
+  if(it.officialTestCount == null) it.officialTestCount = 0;
+  if(it.officialRightCount == null) it.officialRightCount = 0;
+  if(it.favTestCount == null) it.favTestCount = 0;
+  if(it.favRightCount == null) it.favRightCount = 0;
+  if(it.drillCount == null) it.drillCount = 0;
+  if(it.drillRight == null) it.drillRight = 0;
+  if(it.fav == null) it.fav = false;
+  if(it.firstTestDone == null) it.firstTestDone = false;
+  if(it.book == null) it.book = '';
+  if(it.bookName == null) it.bookName = '';
+  if(it.ex === undefined) it.ex = null;
+  if(it.nextDate == null) it.nextDate = t;
+  if(it.updatedAt == null) it.updatedAt = Date.now();
+  return it;
+}
 /** 2.0 迁移：旧「阶段 + 固定间隔」→ FSRS；顺手清掉「zebra zebras」这类脏词条 */
 function migrateItems(list){
   (list||[]).forEach(it=>{
+    normalizeItem(it);
     if(it.learned && !it.fsrs) it.fsrs = legacyFsrs(it);
     if(it.fsrs && !it.fsrs.due) it.fsrs.due = it.nextDate || today();
     if(it.fsrs && it.nextDate !== it.fsrs.due) it.nextDate = it.fsrs.due;
-    if(it.ex === undefined) it.ex = null;
     if(!Array.isArray(it.tags)) it.tags = [];
     if(!Array.isArray(it.history)) it.history = [];
     const m = String(it.en||'').match(/^([A-Za-z][A-Za-z'’-]*)\s+\1(?:s|es)?$/i);
@@ -917,7 +1030,16 @@ const IC_SPK_BIG = '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" 
 const LEARN_PHASES = ['meet','recall','quiz','spell'];
 const PHASE_NAME = {meet:'认识新词', recall:'回想一下', quiz:'选出释义', spell:'默写一遍'};
 
-function startLearn(){
+async function startLearn(){
+  if(S.settings.book){
+    await loadBooks();
+    const target = Math.max(0, Number(S.settings.newPerDay)||30);
+    const freshN = newItems().length;
+    if(target && freshN < target){
+      const n = await topUpFromBook(target - freshN);
+      if(n) toast(`从「${currentBookName()}」加入 ${n} 个新词`);
+    }
+  }
   const list = newItems().slice(0, Number(S.settings.newPerDay)||30);
   if(!list.length){ toast('没有待学的新词'); return; }
   learn = {
@@ -965,6 +1087,7 @@ function renderLearn(){
       </div>
       <div class="senses">${senses.map((z,i)=>
         `<div class="sense"><span class="no">${i+1}</span><span>${esc(z)}</span></div>`).join('')}</div>
+      ${rootLine(it.en)}
       ${ex?`<div class="exbox">
         <div class="ex-en">${esc(ex[0])}<button class="ex-spk" data-act="speakS" data-s="${esc(ex[0])}">${IC_SPK_SM}</button></div>
         <div class="ex-zh">${esc(ex[1])}</div>
@@ -1336,6 +1459,7 @@ function renderStudy(){
         </div>
         <div class="senses">${senses.map((z,i)=>
           `<div class="sense"><span class="no">${i+1}</span><span>${esc(z)}</span></div>`).join('')}</div>
+        ${rootLine(it.en)}
         ${exHTML(it)}
         <div class="hintline">刚才想起来了吗？如实评一下</div>
         ${gradeBar(it)}
@@ -1955,6 +2079,20 @@ function renderHome(){
       <div class="mini"><div class="n">${rec.ans?Math.round((rec.right||0)/rec.ans*100)+'%':'—'}</div><div class="k">今天正确率</div></div>
     </div>`;
 
+  const bk = currentBook();
+  const bkName = currentBookName();
+  const bs = bk ? bookStats(bk) : {inLib:0, learned:0};
+  html += `<div class="sect"><h3>词书</h3><button data-act="books">${S.settings.book?'换一本 ›':'选择 ›'}</button></div>
+    <div class="item" data-act="books">
+      <div class="bookcover">${esc((bkName||'词').slice(0,1))}</div>
+      <div class="m">
+        <div class="en">${esc(bkName||'选择词书')}${bk?` <span class="pill">${esc(bk.level)}</span>`:''}</div>
+        <div class="zh">${bk?`${bk.count} 词 · 已学 ${bs.learned} · 词库中 ${bs.inLib}`:'四六级 / 考研 / 雅思 / 托福 / 常用词组'}</div>
+        <div class="mt">${S.settings.book?'学新词时自动从这本取词':'点这里选一本，学新词会自动取词'}</div>
+      </div>
+      <div style="color:var(--ink3)">›</div>
+    </div>`;
+
   if(S.clockOffset){
     html += `<div class="banner">当前是测试日期（${S.clockOffset>0?'+':''}${S.clockOffset} 天），不是真实今天
       <button data-act="clock0">恢复</button></div>`;
@@ -2032,9 +2170,67 @@ function renderHome(){
 }
 
 /* ============================================================
+   12.5 词书
+   ============================================================ */
+async function openBooks(){
+  $('#sheetTitle').textContent = '选择词书';
+  $('#sheetBody').innerHTML = `<div class="empty">正在加载词书…</div>`;
+  openSheet();
+  const d = await loadBooks();
+  if(!d.books.length){
+    $('#sheetBody').innerHTML = `<div class="empty"><b>词书数据未加载</b>请检查 books.json 是否存在</div>`;
+    return;
+  }
+  const cur = S.settings.book;
+  const cats = {};
+  d.books.forEach(b=>{ (cats[b.category] = cats[b.category]||[]).push(b); });
+  let html = `<p class="tip">选一本词书，学新词时会自动从里面取词；已学进度不会丢。词库来自 ECDICT（MIT）。</p>`;
+  Object.keys(cats).forEach(cat=>{
+    html += `<div class="sect" style="margin:14px 0 8px"><h3>${esc(cat)}</h3></div>`;
+    cats[cat].forEach(b=>{
+      const st = bookStats(b);
+      html += `<div class="item" data-act="pickBook" data-id="${b.id}">
+        <div class="bookcover">${esc(b.name.slice(0,1))}</div>
+        <div class="m">
+          <div class="en">${esc(b.name)} <span class="pill">${esc(b.level)}</span>${cur===b.id?'<span class="pill ok" style="margin-left:4px">当前</span>':''}</div>
+          <div class="zh">${b.count} 词 · 已学 ${st.learned} · 词库中 ${st.inLib}</div>
+        </div>
+        <div style="color:var(--ink3)">${cur===b.id?'✓':'›'}</div>
+      </div>`;
+    });
+  });
+  html += `<div style="display:flex;gap:10px;margin-top:16px">
+    <button class="btn" data-act="bookAdd">加入 100 个</button>
+    <button class="btn primary" data-act="bookLearn">开始学这本</button>
+  </div>
+  <p class="tip" style="text-align:center">「加入」只把词放进词库；「开始学」按每日新词上限自动取词。</p>`;
+  $('#sheetBody').innerHTML = html;
+}
+function pickBook(id){
+  const bk = bookById(id);
+  if(!bk) return;
+  S.settings.book = id;
+  S.settings.bookName = bk.name;
+  save();
+  renderHome();
+  openBooks();
+  toast('已选择：'+bk.name);
+}
+async function bookAdd(){
+  const n = await topUpFromBook(100);
+  renderHome();
+  await openBooks();
+  toast(n ? `已加入 ${n} 个词` : '这些词已经在词库里了');
+}
+function bookLearn(){
+  closeSheet();
+  startLearn();
+}
+
+/* ============================================================
    13. 词库
    ============================================================ */
-let wordFilter = '', tagFilter = '';
+let wordFilter = '', tagFilter = '', wordSort = 'recent';
 function renderWords(){
   $('#wordsCount').textContent = S.items.length + ' 个';
   if(!S.items.length){
@@ -2043,9 +2239,14 @@ function renderWords(){
   }
   const tags = allTags();
   $('#wordsBody').innerHTML = `
-    <input id="wSearch" placeholder="搜索单词" value="${esc(wordFilter)}"
+    <input id="wSearch" placeholder="搜索单词 / 中文释义 / 标签" value="${esc(wordFilter)}"
       style="width:100%;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--card);
       padding:0 14px;margin:4px 0 10px;outline:none">
+    <div class="chips" style="margin:0 0 10px">
+      <button class="chip sm ${wordSort==='recent'?'on':''}" data-wsort="recent">最近</button>
+      <button class="chip sm ${wordSort==='due'?'on':''}" data-wsort="due">按到期日</button>
+      <button class="chip sm ${wordSort==='alpha'?'on':''}" data-wsort="alpha">字母</button>
+    </div>
     ${tags.length?`<div class="chips" style="margin:0 0 10px">
       <button class="chip sm ${tagFilter?'':'on'}" data-tagfilter="">全部</button>
       ${tags.map(t=>`<button class="chip sm ${tagFilter===t?'on':''}" data-tagfilter="${esc(t)}">#${esc(t)}</button>`).join('')}
@@ -2059,9 +2260,23 @@ function renderWords(){
 function renderWordList(){
   const el = $('#wordList');
   if(!el) return;
-  const list = S.items.slice().sort((a,b)=>b.updatedAt-a.updatedAt)
-    .filter(i=>!wordFilter || i.en.toLowerCase().includes(wordFilter))
-    .filter(i=>!tagFilter || (i.tags||[]).includes(tagFilter));
+  const q = wordFilter.trim();
+  let list = S.items.filter(i=>{
+    if(q){
+      const hay = [i.en, i.zh||'', (i.tags||[]).join(' '), i.bookName||''].join(' ').toLowerCase();
+      if(hay.indexOf(q) < 0) return false;
+    }
+    if(tagFilter && !(i.tags||[]).includes(tagFilter)) return false;
+    return true;
+  });
+  if(wordSort==='alpha'){
+    list.sort((a,b)=>String(a.en).localeCompare(String(b.en),'en'));
+  }else if(wordSort==='due'){
+    const key = i=> (i.learned && i.status==='active') ? (dueDate(i)||'9999-12-31') : '9999-12-31';
+    list.sort((a,b)=> key(a).localeCompare(key(b)) || String(a.en).localeCompare(String(b.en),'en'));
+  }else{
+    list.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+  }
   if(!list.length){
     el.innerHTML = `<div class="empty">没有匹配的词</div>`;
     return;
@@ -2077,7 +2292,7 @@ function renderWordList(){
       <div class="m">
         <div class="en">${esc(i.en)}　${st}</div>
         <div class="zh">${esc(i.zh||'（无释义）')}</div>
-        <div class="mt">${(i.tags||[]).map(t=>`<span class="tag">#${esc(t)}</span>`).join('')}
+        <div class="mt">${i.bookName?`<span class="tag">${esc(i.bookName)}</span>`:''}${(i.tags||[]).map(t=>`<span class="tag">#${esc(t)}</span>`).join('')}
           ${i.status==='active'?(i.learned?`下次 ${dd||'—'}`:'尚未学习'):'已完成全部复习'}</div>
       </div>
       <div style="color:var(--ink3)">›</div>
@@ -3257,6 +3472,7 @@ function renderMe(){
       <div class="row" data-act="import"><div class="l">导入备份</div><div style="color:var(--ink3)">›</div></div>
       <div class="row" data-act="sheet"><div class="l">导出默写表</div><div style="color:var(--ink3)">›</div></div>
       <div class="row" data-act="whatsnew"><div class="l">更新说明</div><div style="color:var(--ink3)">›</div></div>
+      <div class="row" data-act="datasource"><div class="l">数据来源与许可</div><div style="color:var(--ink3)">›</div></div>
       <div class="row" data-act="wipe"><div class="l" style="color:var(--bad)">清空全部数据</div><div style="color:var(--ink3)">›</div></div>
     </div>
     <div style="text-align:center;color:var(--ink3);font-size:11.5px;padding:10px 0 20px">
@@ -3342,13 +3558,16 @@ async function openDocRestore(){
     <div class="row">
       <div><div class="l">${esc(b.name)}</div>
       <div class="s">${b.mtime?new Date(b.mtime).toLocaleString('zh-CN'):''}${b.size?' · '+Math.round(b.size/1024)+' KB':''}</div></div>
-      <button class="btn" style="height:34px;flex:0 0 auto;padding:0 16px;font-size:13px" data-act="restoreDoc" data-i="${i}">恢复</button>
-    </div>`).join('') + `<p class="tip" style="margin-top:12px">图片只存在本机；换机请用「导出备份」，那份会带图片。</p>`;
+      <div style="display:flex;gap:6px;flex:0 0 auto">
+        <button class="btn" style="height:34px;padding:0 12px;font-size:13px" data-act="restoreDoc" data-i="${i}" data-merge="1">合并</button>
+        <button class="btn primary" style="height:34px;padding:0 12px;font-size:13px" data-act="restoreDoc" data-i="${i}" data-merge="0">恢复</button>
+      </div>
+    </div>`).join('') + `<p class="tip" style="margin-top:12px">「合并」保留当前数据并去重；图片只存在本机，换机请用「导出备份」。</p>`;
 }
-async function restoreDoc(i){
+async function restoreDoc(i, merge){
   const b = (window.__docList||[])[Number(i)];
   if(!b) return;
-  if(!confirm('用 '+b.name+' 覆盖当前数据？当前进度会丢失')) return;
+  if(!confirm((merge?'把 ':'用 ')+b.name+(merge?' 合并到当前数据？':' 覆盖当前数据？当前进度会丢失'))) return;
   const FS = capPlugin('Filesystem');
   if(!FS) return;
   try{
@@ -3356,6 +3575,11 @@ async function restoreDoc(i){
     const txt = typeof r.data==='string' ? r.data : '';
     const o = JSON.parse(txt);
     if(!o || !Array.isArray(o.items)){ toast('备份内容不对'); return; }
+    if(merge){
+      const m = await mergeBackupData(o);
+      toast(`合并完成：词 +${m.add} / 合并 ${m.merge}，错题 +${m.mAdd}`);
+      return;
+    }
     const imgN = Object.keys(o.imgs||{}).length;
     await applyBackupObject(o);
     toast('已恢复 '+b.name+(imgN?`（含 ${imgN} 张图片）`:''));
@@ -3436,29 +3660,45 @@ function fixSelfCheck(){
   save(); closeSheet(); renderAll();
   toast('已修复'+(drop.size?`，合并重复 ${drop.size} 个`:''));
 }
+function openDataSource(){
+  $('#sheetTitle').textContent = '数据来源与许可';
+  $('#sheetBody').innerHTML = `
+    <div style="font-size:13px;line-height:2;color:var(--ink2)">
+      <b style="color:var(--ink)">词书 / 词根 / 音标 / 释义</b><br>
+      ECDICT（MIT License）<br>
+      github.com/skywind3000/ECDICT<br>
+      完整版权声明见随包文件 ECDICT-LICENSE.txt。<br><br>
+      <b style="color:var(--ink)">词典例句</b><br>
+      本机 dict.json（Modern E-C Dictionary 2021 提取）。<br><br>
+      <b style="color:var(--ink)">记忆算法</b><br>
+      FSRS-6 开源记忆模型，使用默认权重。
+    </div>
+    <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
+  openSheet();
+}
+
 function openWhatsNew(){
   S.settings.seen20 = true;
   S.settings.seen201 = true;
+  S.settings.seen21 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.0.1 更新';
+  $('#sheetTitle').textContent = '温故 2.1 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.0.1 新增</b><br>
-      · 复习页右上角可撤销上一题，误点「忘记」不再改错排期<br>
-      · 删除或替换错题图片会自动回收，自检里也能手动清理<br>
-      · 「我的 → 从手机文档恢复」可直接选每日备份，不用再粘贴 JSON<br>
-      · 新词按学习时的错选/错拼初始化记忆强度；目标保持率可选 85% / 90% / 95%<br><br>
+      <b style="color:var(--ink)">2.1 词书</b><br>
+      · 内置中考 / 高考 / 四级 / 六级 / 考研 / 雅思 / 托福 / GRE 词书<br>
+      · 另有牛津核心、高频 5000、常用词组（442 条）<br>
+      · 选词书后，学新词自动从书里取词，不会一次塞几千个进词库<br>
+      · 学习卡与词条详情显示词根（来自 ECDICT wordroot）<br><br>
+      <b style="color:var(--ink)">2.1 词库与备份</b><br>
+      · 词库搜索支持中文释义和标签；可按最近、到期日、字母排序<br>
+      · 导入备份支持「合并」：同名词保留进度较新的一方，不必再覆盖<br>
+      · 手机文档备份也可以选「合并」或「恢复」<br><br>
+      <b style="color:var(--ink)">2.0.1</b><br>
+      · 复习页可撤销上一题；错题图片自动回收；文档备份可直接恢复<br>
+      · 新词按学习表现初始化强度；目标保持率 85% / 90% / 95%<br><br>
       <b style="color:var(--ink)">2.0 记忆算法</b><br>
-      · 接入 FSRS-6 记忆模型，按遗忘概率排期，而不是固定间隔<br>
-      · 每个词记录记忆强度、难度、保持率，到期日按你的实际表现算<br><br>
-      <b style="color:var(--ink)">复习流程</b><br>
-      · 中→英拼写为主，穿插英→中回忆、例句填空、听写<br>
-      · 英→中先自己回想，再翻释义，然后「忘记 / 模糊 / 记得」自评<br>
-      · 拼得又快又对自动按「简单」排期；忘记的词本轮队尾再过一遍<br><br>
-      <b style="color:var(--ink)">可靠性</b><br>
-      · 图片改存 IndexedDB，不再挤占 5MB 本地存储<br>
-      · 备份写入后回读校验，页面上能看到校验结果<br>
-      · 新增数据自检，可一键修重复词和异常日期
+      · FSRS-6 按遗忘概率排期；中→英拼写 + 三档评分 + 例句填空/听写
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -3619,12 +3859,14 @@ function openDetail(id){
         <div style="font-size:15px;color:var(--ink2)">${esc(it.zh||'（无释义）')}</div>
         ${phon?`<div style="font-size:12px;color:var(--ink3);margin-top:2px">/${esc(phon)}/</div>`:''}
         <div style="font-size:12px;color:var(--ink3);margin-top:4px">
-          ${it.learned?`记忆强度 ${(it.fsrs?it.fsrs.s:0).toFixed(1)} 天 · 难度 ${(it.fsrs?it.fsrs.d:0).toFixed(1)}`:'尚未学习'}　·　收录 ${it.created}</div>
+          ${it.learned?`记忆强度 ${(it.fsrs?it.fsrs.s:0).toFixed(1)} 天 · 难度 ${(it.fsrs?it.fsrs.d:0).toFixed(1)}`:'尚未学习'}　·　收录 ${it.created}
+          ${it.bookName?`　·　${esc(it.bookName)}`:''}</div>
       </div>
       <button class="iconbtn" data-act="speak" data-w="${esc(it.en)}">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/></svg>
       </button>
     </div>
+    ${rootLine(it.en)}
     ${ex?`<div class="exbox" style="margin-top:14px">
       <div class="ex-en">${esc(ex[0])}<button class="ex-spk" data-act="speakS" data-s="${esc(ex[0])}">${IC_SPK_SM}</button></div>
       <div class="ex-zh">${esc(ex[1])}</div>
@@ -3717,9 +3959,107 @@ function doImport(){
     <textarea id="impBox" placeholder="粘贴备份 JSON"></textarea>
     <div style="display:flex;gap:10px;margin-top:14px">
       <button class="btn" data-act="closeSheet">取消</button>
-      <button class="btn primary" data-act="doImport">覆盖导入</button>
-    </div>`;
+      <button class="btn" data-act="doImport">覆盖导入</button>
+      <button class="btn primary" data-act="mergeImport">合并导入</button>
+    </div>
+    <p class="tip">「合并」按单词合并，同名保留进度较新的一方，不会清空当前数据。</p>`;
   openSheet();
+}
+function mergeItemRecords(a,b){
+  const aLast = (a.fsrs && a.fsrs.last) || 0;
+  const bLast = (b.fsrs && b.fsrs.last) || 0;
+  const src = bLast > aLast ? b : a;
+  const out = JSON.parse(JSON.stringify(src));
+  out.id = a.id || b.id;
+  out.en = a.en || b.en;
+  out.zh = a.zh || b.zh;
+  out.tags = [...new Set([...(a.tags||[]), ...(b.tags||[])].filter(Boolean))];
+  out.book = a.book || b.book;
+  out.bookName = a.bookName || b.bookName;
+  out.ex = a.ex || b.ex || null;
+  out.fav = !!(a.fav || b.fav);
+  out.learned = !!(a.learned || b.learned);
+  out.totalAnswerCount = Math.max(a.totalAnswerCount||0, b.totalAnswerCount||0);
+  out.officialTestCount = Math.max(a.officialTestCount||0, b.officialTestCount||0);
+  out.officialRightCount = Math.max(a.officialRightCount||0, b.officialRightCount||0);
+  out.errCount = Math.max(a.errCount||0, b.errCount||0);
+  out.streak = Math.max(a.streak||0, b.streak||0);
+  out.created = a.created || b.created;
+  out.updatedAt = Math.max(a.updatedAt||0, b.updatedAt||0);
+  out.history = ((a.history||[]).concat(b.history||[])).slice(-40);
+  const f = a.fsrs || b.fsrs;
+  out.fsrs = f ? JSON.parse(JSON.stringify(f)) : null;
+  out.nextDate = out.fsrs ? out.fsrs.due : (a.nextDate || b.nextDate || '');
+  return normalizeItem(out);
+}
+function mergeBackupObject(o){
+  let add = 0, merge = 0, mAdd = 0, mMerge = 0;
+  migrateItems(o.items||[]);
+  (o.mistakes||[]).forEach(m=>{
+    m.answer = m.answer || ''; m.cause = m.cause || ''; m.tag = m.tag || '';
+    m.img = m.img || ''; m.book = m.book || ''; m.topic = normTopic(m.topic||'');
+    m.derived = Array.isArray(m.derived) ? m.derived : [];
+    m.fav = !!m.fav; m.failCount = m.failCount||0; m.finishedAt = m.finishedAt||'';
+    if(!m.nextDate) m.nextDate = today();
+  });
+  const byEn = new Map(S.items.map(i=>[normEn(i.en), i]));
+  (o.items||[]).forEach(x=>{
+    if(!x || !x.en) return;
+    const k = normEn(x.en);
+    if(byEn.has(k)){
+      const cur = byEn.get(k);
+      const out = mergeItemRecords(cur, x);
+      const idx = S.items.indexOf(cur);
+      if(idx>=0) S.items[idx] = out;
+      byEn.set(k, out);
+      merge++;
+    }else{
+      S.items.push(x);
+      byEn.set(k, x);
+      add++;
+    }
+  });
+  const byId = new Map(S.mistakes.map(m=>[m.id, m]));
+  (o.mistakes||[]).forEach(m=>{
+    if(!m || !m.id) return;
+    if(byId.has(m.id)){
+      const cur = byId.get(m.id);
+      if((m.updatedAt||0) > (cur.updatedAt||0)) Object.assign(cur, m);
+      mMerge++;
+    }else{
+      S.mistakes.push(m); byId.set(m.id, m); mAdd++;
+    }
+  });
+  Object.keys(o.days||{}).forEach(d=>{
+    const a = S.days[d] || {ans:0,right:0,items:0}, b = o.days[d] || {};
+    S.days[d] = {ans:Math.max(a.ans||0,b.ans||0), right:Math.max(a.right||0,b.right||0), items:Math.max(a.items||0,b.items||0)};
+  });
+  Object.keys(o.spellHeat||{}).forEach(k=>{
+    S.spellHeat[k] = Math.max(S.spellHeat[k]||0, o.spellHeat[k]||0);
+  });
+  Object.keys(o.settings||{}).forEach(k=>{
+    if(S.settings[k] === undefined) S.settings[k] = o.settings[k];
+  });
+  S.exam = null;
+  return {add, merge, mAdd, mMerge, imgs:o.imgs||{}};
+}
+async function mergeBackupData(o){
+  const r = mergeBackupObject(o);
+  for(const k of Object.keys(r.imgs)){
+    try{ await imgPut(k, r.imgs[k]); }catch(e){}
+  }
+  save(); closeSheet(); applyTheme(); renderAll();
+  return r;
+}
+async function mergeImport(){
+  const raw = ($('#impBox').value||'').trim();
+  if(!raw){ toast('没有内容'); return; }
+  let o;
+  try{ o = JSON.parse(raw); }catch(e){ toast('JSON 格式不对'); return; }
+  if(!o || !Array.isArray(o.items)){ toast('不是有效的备份'); return; }
+  if(!confirm('把备份合并到当前数据？同名词保留进度较新的一方')) return;
+  const r = await mergeBackupData(o);
+  toast(`合并完成：词 +${r.add} / 合并 ${r.merge}，错题 +${r.mAdd}`);
 }
 async function applyBackupObject(o){
   const imgs = o.imgs || {};
@@ -3859,6 +4199,9 @@ document.addEventListener('click', e=>{
   const tf = e.target.closest('[data-tagfilter]');
   if(tf){ tagFilter = tf.dataset.tagfilter || ''; renderWords(); return; }
 
+  const ws = e.target.closest('[data-wsort]');
+  if(ws){ wordSort = ws.dataset.wsort; renderWords(); return; }
+
   const md = e.target.closest('[data-misdetail]');
   if(md){ openMistakeDetail(md.dataset.misdetail); return; }
 
@@ -3905,6 +4248,10 @@ document.addEventListener('click', e=>{
   switch(act){
     case 'theme': S.settings.theme = S.settings.theme==='dark'?'light':'dark'; applyTheme(); save(); renderMe(); break;
     case 'startLearn': startLearn(); break;
+    case 'books': openBooks(); break;
+    case 'pickBook': pickBook(t.dataset.id); break;
+    case 'bookAdd': bookAdd(); break;
+    case 'bookLearn': bookLearn(); break;
     case 'startReview': startReview(); break;
     case 'startDrill': startDrill(); break;
     case 'openFree': openFree(); break;
@@ -3918,7 +4265,7 @@ document.addEventListener('click', e=>{
       break;
     }
     case 'docrestore': openDocRestore(); break;
-    case 'restoreDoc': restoreDoc(t.dataset.i); break;
+    case 'restoreDoc': restoreDoc(t.dataset.i, t.dataset.merge==='1'); break;
     case 'addMistake': openAddMistake(); break;
     case 'doAddMistake': doAddMistake(); break;
     case 'startMrev': startMrev(); break;
@@ -4014,6 +4361,7 @@ document.addEventListener('click', e=>{
       break;
     }
     case 'whatsnew': openWhatsNew(); break;
+    case 'datasource': openDataSource(); break;
     case 'quit': learn=null; exam=null; goHome(); break;
     case 'speak': speak(t.dataset.w); break;
     case 'speakS': speak(t.dataset.s); break;
@@ -4038,6 +4386,7 @@ document.addEventListener('click', e=>{
     case 'export': doExport(); break;
     case 'import': doImport(); break;
     case 'doImport': runImport(); break;
+    case 'mergeImport': mergeImport(); break;
     case 'sheet': doSheet(); break;
     case 'wipe': {
       if(!confirm('清空全部数据？建议先导出备份')) break;
@@ -4089,6 +4438,8 @@ $('#mask').addEventListener('click', closeSheet);
   migrateItems(S.items);
   applyTheme();
   loadDict().then(()=>{ if($('#scr-me').classList.contains('on')) renderMe(); });
+  loadBooks().then(()=>renderHome());
+  loadRoots();
   renderAll();
   showScreen('home');
   save();   // 落盘一次，确保设置迁移/默认值写入本地
@@ -4100,7 +4451,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen201) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen21) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
