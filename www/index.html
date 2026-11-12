@@ -438,7 +438,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
-let APP_VERSION = '2.1';        // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.2.0';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -457,14 +457,15 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:0, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, fsrsDR:0.9,
+    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, fsrsDR:0.9,
     book:'', bookName:''
   },
   clockOffset: 0,
   items: [],
   days: {},
-  meta: { deferStreak:0, deferDate:'' },
+  meta: { deferStreak:0, deferDate:'', snapWarned:false },
   exam: null,
+  learn: null,
   mistakes: [],
   spellHeat: {}
 };
@@ -508,6 +509,7 @@ function load(){
     d.items = Array.isArray(d.items)? d.items : [];
     d.days = d.days || {};
     d.mistakes = Array.isArray(d.mistakes) ? d.mistakes : [];
+    d.learn = d.learn || null;
     if(!d.settings.lastBook) d.settings.lastBook = {};
     d.mistakes.forEach(m=>{
       if(m.answer == null) m.answer = '';
@@ -534,10 +536,17 @@ function load(){
     return d;
   }catch(e){ return JSON.parse(JSON.stringify(DEFAULTS)); }
 }
+let saveTimer = null;
 function save(){
+  if(saveTimer){ clearTimeout(saveTimer); saveTimer = null; }
   try{ localStorage.setItem(KEY, JSON.stringify(S)); }
   catch(e){ toast('存储空间不足，请先导出备份'); }
   scheduleBackup();
+}
+/** 高频操作（学习步骤、拼写输入）先攒 200ms 再落盘，减少卡顿 */
+function saveSoon(ms){
+  if(saveTimer) return;
+  saveTimer = setTimeout(()=>{ saveTimer = null; save(); }, ms||200);
 }
 
 /* ---- 自动备份：本地快照（最近 3 份） + 手机文档目录（每天 1 份） ---- */
@@ -554,19 +563,24 @@ function snapshots(){
 function backupPayload(){
   return JSON.stringify({
     v:1, saved:today(), items:S.items, days:S.days, settings:S.settings,
-    clockOffset:S.clockOffset, meta:S.meta, mistakes:S.mistakes, spellHeat:S.spellHeat
+    clockOffset:S.clockOffset, meta:S.meta, mistakes:S.mistakes, spellHeat:S.spellHeat, learn:S.learn
   });
 }
 function writeSnapshot(){
   try{
     const data = backupPayload();
-    if(data.length > 600000) return;
+    if(data.length > 600000){
+      // 词库很大时 localStorage 放不下快照。标记出来，别让用户以为还有 3 份。
+      if(!S.meta.snapWarned) S.meta.snapWarned = true;
+      return;
+    }
     const arr = snapshots();
     const d = today();
     const rec = {d, ts:Date.now(), n:S.items.length, data};
     const i = arr.findIndex(x=>x.d===d);
     if(i>=0) arr[i] = rec; else arr.unshift(rec);
     localStorage.setItem(SNAP_KEY, JSON.stringify(arr.slice(0,3)));
+    if(S.meta.snapWarned) S.meta.snapWarned = false;
   }catch(e){}
 }
 function capPlugin(name){
@@ -602,6 +616,24 @@ async function capBackup(){
   }catch(e){ /* 部分平台不支持回读，按成功处理 */ }
   S.meta.lastBackup = {d:today(), n:S.items.length, ok};
   save();
+}
+/** 覆盖/合并/恢复之前，先把当前数据另存一份，避免手滑没有退路 */
+async function preRestoreBackup(){
+  const FS = capPlugin('Filesystem');
+  const data = backupPayload();
+  const stamp = today() + '-' + Date.now();
+  if(FS){
+    try{
+      await FS.writeFile({path:'温故/恢复前-'+stamp+'.json', data, directory:'DOCUMENTS', encoding:'utf8', recursive:true});
+      return true;
+    }catch(e){
+      try{
+        await FS.writeFile({path:'恢复前-'+stamp+'.json', data, directory:'DATA', encoding:'utf8'});
+        return true;
+      }catch(_){}
+    }
+  }
+  return false;
 }
 
 /* ============================================================
@@ -990,6 +1022,52 @@ function buildPaper(){
    9. 学习流程（认识 → 回忆 → 选择 → 默写）
    ============================================================ */
 let learn = null;
+/** 学习会话每走一步就落盘，进程被回收/重启后还能接着学 */
+function persistLearn(){
+  if(!learn){ S.learn = null; saveSoon(120); return; }
+  S.learn = {
+    date: learn.date || today(),
+    ids: learn.ids.slice(),
+    idx: learn.idx,
+    phase: learn.phase,
+    revealed: !!learn.revealed,
+    quiz: Array.isArray(learn.quiz) ? learn.quiz.slice() : null,
+    wrong: Object.assign({}, learn.wrong || {}),
+    tries: Object.assign({}, learn.tries || {}),
+    requeued: Object.assign({}, learn.requeued || {}),
+    spokenFor: learn.spokenFor || '',
+    copy: !!learn.copy,
+    text: learn.text || ''
+  };
+  saveSoon(120);
+}
+function resumeLearn(){
+  const l = S.learn;
+  if(!l || !Array.isArray(l.ids) || !l.ids.length){
+    S.learn = null; save(); toast('没有可继续的学习'); return;
+  }
+  const ids = l.ids.filter(id=>byId(id));
+  if(!ids.length){
+    S.learn = null; save(); toast('上次学习记录已失效'); return;
+  }
+  learn = {
+    date: l.date || today(),
+    ids,
+    idx: Math.min(Math.max(0, Number(l.idx)||0), ids.length),
+    phase: LEARN_PHASES.indexOf(l.phase) >= 0 ? l.phase : 'meet',
+    revealed: !!l.revealed,
+    quiz: Array.isArray(l.quiz) ? l.quiz : null,
+    wrong: Object.assign({}, l.wrong || {}),
+    tries: Object.assign({}, l.tries || {}),
+    requeued: Object.assign({}, l.requeued || {}),
+    spokenFor: l.spokenFor || '',
+    copy: !!l.copy,
+    text: l.text || ''
+  };
+  if(learn.idx >= learn.ids.length){ finishLearn(); return; }
+  showScreen('learn');
+  renderLearn();
+}
 
 function dictSensesOf(word){
   const d = dictLookup(word);
@@ -1031,6 +1109,8 @@ const LEARN_PHASES = ['meet','recall','quiz','spell'];
 const PHASE_NAME = {meet:'认识新词', recall:'回想一下', quiz:'选出释义', spell:'默写一遍'};
 
 async function startLearn(){
+  if(S.learn && Array.isArray(S.learn.ids) && S.learn.ids.length &&
+     !confirm('还有一次未完成的学习，开始新的会覆盖它，继续？')) return;
   if(S.settings.book){
     await loadBooks();
     const target = Math.max(0, Number(S.settings.newPerDay)||30);
@@ -1043,6 +1123,7 @@ async function startLearn(){
   const list = newItems().slice(0, Number(S.settings.newPerDay)||30);
   if(!list.length){ toast('没有待学的新词'); return; }
   learn = {
+    date: today(),
     ids: list.map(i=>i.id),
     idx: 0,
     phase: 'meet',
@@ -1055,6 +1136,8 @@ async function startLearn(){
     copy: false,
     text: ''
   };
+  persistLearn();
+  save();
   showScreen('learn');
   renderLearn();
 }
@@ -1198,6 +1281,7 @@ function learnNext(){
     learn.idx++;
     learn.phase = 'meet';
   }
+  persistLearn();
   renderLearn();
 }
 
@@ -1230,9 +1314,11 @@ function spellCheck(){
   learn.text = '';
   if(learn.tries[it.id] >= 3){
     learn.copy = true;
+    persistLearn();
     renderLearn();
     toast('连错 3 次，照着正确拼写再打一遍');
   }else{
+    persistLearn();
     renderLearn();
     toast(learn.copy ? '再仔细看一遍正确拼写' : '不对哦，还有 '+(3-learn.tries[it.id])+' 次机会');
   }
@@ -1243,6 +1329,7 @@ function finishLearn(){
   // 学习过程中的错选/错拼，决定新词的初始记忆强度
   const perf = learn ? {wrong:Object.assign({}, learn.wrong), tries:Object.assign({}, learn.tries)} : {wrong:{},tries:{}};
   learn = null;
+  S.learn = null;
   const t = today();
   let n = 0, weak = 0;
   ids.forEach(id=>{
@@ -1325,6 +1412,8 @@ function kbInput(k){
   if(exam && exam.mode==='review'){
     clearTimeout(kbSaveT);
     kbSaveT = setTimeout(()=>{ S.exam = exam; save(); }, 800);
+  }else if(learn){
+    persistLearn();
   }
 }
 
@@ -2060,6 +2149,7 @@ function renderHome(){
   const st = streak();
   const rec = S.days[t] || {ans:0,right:0};
   const undone = (S.exam && S.exam.date===t && !S.exam.done && (S.exam.ids||[]).length) ? S.exam : null;
+  const lp = (S.learn && Array.isArray(S.learn.ids) && S.learn.ids.length) ? S.learn : null;
 
   let html = `
     <div class="hero">
@@ -2071,6 +2161,14 @@ function renderHome(){
         ${fresh.length?`<button class="ghost" data-act="startLearn">学新词</button>`:''}
       </div>
     </div>
+
+    ${lp?`<div class="mini" data-act="resumeLearn" style="display:flex;align-items:center;gap:12px;margin-bottom:14px;border-color:var(--brand)">
+      <div style="flex:1">
+        <div style="font-weight:650">继续上次学习</div>
+        <div style="font-size:12px;color:var(--ink3);margin-top:2px">第 ${Math.min((Number(lp.idx)||0)+1, lp.ids.length)} / ${lp.ids.length} 个 · ${PHASE_NAME[lp.phase]||'学习'}</div>
+      </div>
+      <div style="color:var(--brand);font-weight:650;font-size:13px">继续 ›</div>
+    </div>`:''}
 
     <div class="grid2">
       <div class="mini"><div class="n">${S.items.length}</div><div class="k">在库词条</div></div>
@@ -2230,8 +2328,9 @@ function bookLearn(){
 /* ============================================================
    13. 词库
    ============================================================ */
-let wordFilter = '', tagFilter = '', wordSort = 'recent';
+let wordFilter = '', tagFilter = '', wordSort = 'recent', wordShown = 60;
 function renderWords(){
+  wordShown = 60;
   $('#wordsCount').textContent = S.items.length + ' 个';
   if(!S.items.length){
     $('#wordsBody').innerHTML = `<div class="empty"><b>还没有生词</b>点右下角 + 添加，或从词典查一个词</div>`;
@@ -2254,7 +2353,7 @@ function renderWords(){
     ${tagFilter?`<button class="btn primary" style="height:40px;font-size:14px;margin-bottom:10px" data-act="freeTag" data-tag="${esc(tagFilter)}">复习 #${esc(tagFilter)} 的词</button>`:''}
     <div id="wordList"></div>`;
   const inp = $('#wSearch');
-  inp.addEventListener('input', e=>{ wordFilter = e.target.value.toLowerCase(); renderWordList(); });
+  inp.addEventListener('input', e=>{ wordFilter = e.target.value.toLowerCase(); wordShown = 60; renderWordList(); });
   renderWordList();
 }
 function renderWordList(){
@@ -2281,7 +2380,9 @@ function renderWordList(){
     el.innerHTML = `<div class="empty">没有匹配的词</div>`;
     return;
   }
-  el.innerHTML = list.map(i=>{
+  const total = list.length;
+  const shown = list.slice(0, wordShown);
+  el.innerHTML = shown.map(i=>{
     const dd = dueDate(i);
     const isDue = i.learned && i.status==='active' && dd && dd<=today();
     const st = i.status==='graduated' ? '<span class="pill ok">长期记忆</span>'
@@ -2297,7 +2398,9 @@ function renderWordList(){
       </div>
       <div style="color:var(--ink3)">›</div>
     </div>`;
-  }).join('');
+  }).join('') + (total > wordShown
+    ? `<button class="btn" data-act="moreWords" style="width:100%;margin-top:6px;height:44px">加载更多（还有 ${total-wordShown} 个）</button>`
+    : '');
 }
 
 /* ============================================================
@@ -3449,6 +3552,7 @@ function renderMe(){
         ? `上次 ${S.meta.lastBackup.d} · ${S.meta.lastBackup.n} 词 · ${S.meta.lastBackup.ok?'回读校验通过':'校验失败'}`
         : '每天存一份到手机「文档/温故」，本地再留 3 份快照'}</div></div>
         <button class="switch ${S.settings.autoBackup?'on':''}" role="switch" aria-checked="${!!S.settings.autoBackup}" aria-label="自动备份"><i></i></button></div>
+      ${S.meta.snapWarned?`<div class="row"><div><div class="l" style="color:var(--warn)">本地快照已停用</div><div class="s">词库较大，请定期用「导出备份」</div></div></div>`:''}
       <div class="row" data-act="snapshots"><div><div class="l">恢复快照</div><div class="s">${snaps.length?snaps.map(s=>s.d).join('、'):'暂无快照'}</div></div>
         <div style="color:var(--ink3)">${snaps.length?snaps.length+' 份 ›':'›'}</div></div>
       <div class="row" data-act="docrestore"><div><div class="l">从手机文档恢复</div><div class="s">读取「文档/温故」里的每日备份</div></div>
@@ -3567,14 +3671,16 @@ async function openDocRestore(){
 async function restoreDoc(i, merge){
   const b = (window.__docList||[])[Number(i)];
   if(!b) return;
-  if(!confirm((merge?'把 ':'用 ')+b.name+(merge?' 合并到当前数据？':' 覆盖当前数据？当前进度会丢失'))) return;
   const FS = capPlugin('Filesystem');
   if(!FS) return;
   try{
     const r = await FS.readFile({path:b.path, directory:b.directory, encoding:'utf8'});
     const txt = typeof r.data==='string' ? r.data : '';
     const o = JSON.parse(txt);
-    if(!o || !Array.isArray(o.items)){ toast('备份内容不对'); return; }
+    if(!validBackup(o)){ toast('备份内容不对'); return; }
+    const auto = await preRestoreBackup();
+    if(!confirm((auto?'已自动备份当前数据。':'未能自动备份当前数据。')+
+      (merge?'把 '+b.name+' 合并到当前数据？':'用 '+b.name+' 覆盖当前数据？当前进度会丢失'))) return;
     if(merge){
       const m = await mergeBackupData(o);
       toast(`合并完成：词 +${m.add} / 合并 ${m.merge}，错题 +${m.mAdd}`);
@@ -3681,23 +3787,21 @@ function openWhatsNew(){
   S.settings.seen20 = true;
   S.settings.seen201 = true;
   S.settings.seen21 = true;
+  S.settings.seen22 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.1 更新';
+  $('#sheetTitle').textContent = '温故 2.2.0 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.1 词书</b><br>
-      · 内置中考 / 高考 / 四级 / 六级 / 考研 / 雅思 / 托福 / GRE 词书<br>
-      · 另有牛津核心、高频 5000、常用词组（442 条）<br>
-      · 选词书后，学新词自动从书里取词，不会一次塞几千个进词库<br>
-      · 学习卡与词条详情显示词根（来自 ECDICT wordroot）<br><br>
-      <b style="color:var(--ink)">2.1 词库与备份</b><br>
-      · 词库搜索支持中文释义和标签；可按最近、到期日、字母排序<br>
-      · 导入备份支持「合并」：同名词保留进度较新的一方，不必再覆盖<br>
-      · 手机文档备份也可以选「合并」或「恢复」<br><br>
-      <b style="color:var(--ink)">2.0.1</b><br>
-      · 复习页可撤销上一题；错题图片自动回收；文档备份可直接恢复<br>
-      · 新词按学习表现初始化强度；目标保持率 85% / 90% / 95%<br><br>
-      <b style="color:var(--ink)">2.0 记忆算法</b><br>
+      <b style="color:var(--ink)">2.2.0 数据安全</b><br>
+      · 学到一半退出/被系统回收，首页会出现「继续上次学习」，不再从头再来<br>
+      · 学习步骤、拼写输入自动落盘，最多丢最后 120ms<br>
+      · 词库分页，先显示 60 条，可「加载更多」，几千词不再一次渲染<br>
+      · 词库很大时本地快照会停用，并在「我的」明确提示，不再静默失效<br>
+      · 覆盖/合并/恢复备份前，会先把当前数据另存一份「恢复前-时间.json」<br>
+      · 导入备份会校验结构，异常的 JSON 不会直接覆盖数据<br><br>
+      <b style="color:var(--ink)">2.1</b><br>
+      · 11 本词书（四六级/考研/雅思/托福/GRE/词组）、中文搜索、按到期日排序、合并导入<br><br>
+      <b style="color:var(--ink)">2.0</b><br>
       · FSRS-6 按遗忘概率排期；中→英拼写 + 三档评分 + 例句填空/听写
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
@@ -4056,16 +4160,25 @@ async function mergeImport(){
   if(!raw){ toast('没有内容'); return; }
   let o;
   try{ o = JSON.parse(raw); }catch(e){ toast('JSON 格式不对'); return; }
-  if(!o || !Array.isArray(o.items)){ toast('不是有效的备份'); return; }
-  if(!confirm('把备份合并到当前数据？同名词保留进度较新的一方')) return;
+  if(!validBackup(o)){ toast('不是有效的备份，或词条数据异常'); return; }
+  const auto = await preRestoreBackup();
+  if(!confirm((auto?'已自动备份当前数据。':'未能自动备份当前数据。')+'把备份合并到当前数据？同名词保留进度较新的一方')) return;
   const r = await mergeBackupData(o);
   toast(`合并完成：词 +${r.add} / 合并 ${r.merge}，错题 +${r.mAdd}`);
+}
+function validBackup(o){
+  if(!o || typeof o!=='object' || !Array.isArray(o.items)) return false;
+  if(o.items.length > 50000) return false;
+  const bad = o.items.filter(x=>!x || typeof x.en!=='string' || !x.en.trim()).length;
+  return !bad || bad / o.items.length < 0.2;
 }
 async function applyBackupObject(o){
   const imgs = o.imgs || {};
   delete o.imgs;
   S = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), o);
   S.exam = null;
+  S.items = (S.items||[]).filter(x=>x && typeof x.en==='string' && x.en.trim());
+  S.mistakes = (S.mistakes||[]).filter(m=>m && m.id);
   migrateItems(S.items);
   for(const k of Object.keys(imgs)){
     try{ await imgPut(k, imgs[k]); }catch(e){}
@@ -4077,8 +4190,9 @@ async function runImport(){
   if(!raw){ toast('没有内容'); return; }
   let o;
   try{ o = JSON.parse(raw); }catch(e){ toast('JSON 格式不对'); return; }
-  if(!o || !Array.isArray(o.items)){ toast('不是有效的备份'); return; }
-  if(!confirm('覆盖当前全部数据？')) return;
+  if(!validBackup(o)){ toast('不是有效的备份，或词条数据异常'); return; }
+  const auto = await preRestoreBackup();
+  if(!confirm((auto?'已自动备份当前数据。':'未能自动备份当前数据。')+'覆盖当前全部数据？')) return;
   const imgN = Object.keys(o.imgs||{}).length;
   await applyBackupObject(o);
   toast('导入完成' + (imgN?`，含 ${imgN} 张图片`:''));
@@ -4107,7 +4221,7 @@ function showScreen(name){
   if(tt) tt.classList.remove('on');
   clearTimeout(toastT);
 }
-function goHome(){ showScreen('home'); renderHome(); }
+function goHome(){ if(learn) persistLearn(); showScreen('home'); renderHome(); }
 
 function renderAll(){
   renderHome();
@@ -4134,6 +4248,7 @@ function pickChoice(btn){
   }else{
     btn.classList.add('wrong');
     learn.wrong[it.id] = true;
+    persistLearn();
     const all = document.querySelectorAll('#learnStage .opt');
     const idx = q.indexOf(right);
     if(all[idx]) all[idx].classList.add('right');
@@ -4362,13 +4477,15 @@ document.addEventListener('click', e=>{
     }
     case 'whatsnew': openWhatsNew(); break;
     case 'datasource': openDataSource(); break;
+    case 'resumeLearn': resumeLearn(); break;
+    case 'moreWords': wordShown += 60; renderWordList(); break;
     case 'quit': learn=null; exam=null; goHome(); break;
     case 'speak': speak(t.dataset.w); break;
     case 'speakS': speak(t.dataset.s); break;
     case 'meetNext': learnNext(); break;
-    case 'reveal': if(learn){ learn.revealed=true; renderLearn(); } break;
+    case 'reveal': if(learn){ learn.revealed=true; persistLearn(); renderLearn(); } break;
     case 'recallYes': learnNext(); break;
-    case 'recallNo': if(learn){ learn.wrong[learn.ids[learn.idx]]=true; learnNext(); } break;
+    case 'recallNo': if(learn){ learn.wrong[learn.ids[learn.idx]]=true; persistLearn(); learnNext(); } break;
     case 'pick': pickChoice(t); break;
     case 'prevQ': prevQ(); break;
     case 'nextQ': nextQ(); break;
@@ -4451,7 +4568,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen21) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen22) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
