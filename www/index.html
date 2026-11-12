@@ -438,7 +438,9 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
    0. 常量
    ============================================================ */
 const KEY = 'wordapp_v1';
-let APP_VERSION = '2.2.0';      // 每次发版递增，同时改 www/version.json
+const META_KEY = 'wordapp_meta_v2';
+const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
+let APP_VERSION = '2.2.1';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -457,7 +459,7 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:0, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, fsrsDR:0.9,
+    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, fsrsDR:0.9,
     book:'', bookName:''
   },
   clockOffset: 0,
@@ -496,7 +498,18 @@ let S = load();
 function load(){
   try{
     const raw = localStorage.getItem(KEY);
-    if(!raw) return JSON.parse(JSON.stringify(DEFAULTS));
+    if(!raw){
+      const d0 = JSON.parse(JSON.stringify(DEFAULTS));
+      const m0 = readMeta();
+      if(m0){
+        d0.settings = Object.assign(d0.settings, m0.settings||{});
+        d0.meta = Object.assign(d0.meta, m0.meta||{});
+        if(Object.prototype.hasOwnProperty.call(m0,'learn')) d0.learn = m0.learn;
+        if(Object.prototype.hasOwnProperty.call(m0,'exam')) d0.exam = m0.exam;
+        if(m0.clockOffset != null) d0.clockOffset = m0.clockOffset;
+      }
+      return d0;
+    }
     const d = JSON.parse(raw);
     const base = JSON.parse(JSON.stringify(DEFAULTS));
     d.settings = Object.assign(base.settings, d.settings||{});
@@ -506,6 +519,14 @@ function load(){
       d.settings.onlineAudioFixed = true;
     }
     d.meta = Object.assign(base.meta, d.meta||{});
+    const m = readMeta();
+    if(m){
+      d.settings = Object.assign(d.settings, m.settings||{});
+      d.meta = Object.assign(d.meta, m.meta||{});
+      if(Object.prototype.hasOwnProperty.call(m,'learn')) d.learn = m.learn;
+      if(Object.prototype.hasOwnProperty.call(m,'exam')) d.exam = m.exam;
+      if(m.clockOffset != null) d.clockOffset = m.clockOffset;
+    }
     d.items = Array.isArray(d.items)? d.items : [];
     d.days = d.days || {};
     d.mistakes = Array.isArray(d.mistakes) ? d.mistakes : [];
@@ -536,11 +557,32 @@ function load(){
     return d;
   }catch(e){ return JSON.parse(JSON.stringify(DEFAULTS)); }
 }
-let saveTimer = null;
+let saveTimer = null, idbTimer = null, DB = null, DB_MODE = 'local';
+function readMeta(){
+  try{ return JSON.parse(localStorage.getItem(META_KEY) || 'null'); }catch(e){ return null; }
+}
+/** localStorage 只留很小的一份元数据：设置、词书、未完成学习会话 */
+function saveMeta(){
+  try{
+    localStorage.setItem(META_KEY, JSON.stringify({
+      v:APP_VERSION, saved:Date.now(), settings:S.settings, clockOffset:S.clockOffset,
+      meta:S.meta, learn:S.learn, exam:S.exam, counts:{items:S.items.length, mistakes:S.mistakes.length}
+    }));
+  }catch(e){}
+}
 function save(){
   if(saveTimer){ clearTimeout(saveTimer); saveTimer = null; }
-  try{ localStorage.setItem(KEY, JSON.stringify(S)); }
-  catch(e){ toast('存储空间不足，请先导出备份'); }
+  saveMeta();
+  if(DB_MODE === 'idb' && DB){
+    clearTimeout(idbTimer);
+    idbTimer = setTimeout(()=>{
+      idbTimer = null;
+      idbPut('state', S).catch(()=>{});
+    }, 250);
+  }else{
+    try{ localStorage.setItem(KEY, JSON.stringify(S)); }
+    catch(e){ toast('存储空间不足，请先导出备份'); }
+  }
   scheduleBackup();
 }
 /** 高频操作（学习步骤、拼写输入）先攒 200ms 再落盘，减少卡顿 */
@@ -548,6 +590,108 @@ function saveSoon(ms){
   if(saveTimer) return;
   saveTimer = setTimeout(()=>{ saveTimer = null; save(); }, ms||200);
 }
+/* ---- IndexedDB：主数据存储，容量由磁盘决定，不再受 localStorage 5MB 限制 ---- */
+function idbOpen(){
+  return new Promise((resolve, reject)=>{
+    if(!window.indexedDB) return reject(new Error('no indexedDB'));
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = ()=>{
+      const db = req.result;
+      if(!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+    };
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error || new Error('idb open failed'));
+    req.onblocked = ()=>reject(new Error('idb blocked'));
+  });
+}
+function idbGet(key){
+  return new Promise((resolve, reject)=>{
+    if(!DB) return reject(new Error('no db'));
+    const tx = DB.transaction(DB_STORE, 'readonly');
+    const req = tx.objectStore(DB_STORE).get(key);
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+function idbPut(key, val){
+  return new Promise((resolve, reject)=>{
+    if(!DB) return reject(new Error('no db'));
+    const tx = DB.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).put(val, key);
+    tx.oncomplete = ()=>resolve(true);
+    tx.onerror = ()=>reject(tx.error);
+    tx.onabort = ()=>reject(tx.error);
+  });
+}
+function idbDel(key){
+  return new Promise((resolve, reject)=>{
+    if(!DB) return reject(new Error('no db'));
+    const tx = DB.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).delete(key);
+    tx.oncomplete = ()=>resolve(true);
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+/**
+ * 启动时优先读 IndexedDB；没有就迁移 localStorage。
+ * 旧的全量 localStorage 数据保留到第二次成功启动，确认 IDB 稳定后再删除。
+ */
+async function idbBoot(){
+  try{
+    DB = await idbOpen();
+    const st = await idbGet('state');
+    if(st && Array.isArray(st.items)){
+      S = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), st);
+      S.settings = Object.assign({}, DEFAULTS.settings, st.settings||{});
+      S.meta = Object.assign({}, DEFAULTS.meta, st.meta||{});
+      S.items = Array.isArray(S.items) ? S.items : [];
+      S.mistakes = Array.isArray(S.mistakes) ? S.mistakes : [];
+      S.days = S.days || {};
+      S.spellHeat = S.spellHeat || {};
+      const m = readMeta();
+      if(m){
+        S.settings = Object.assign(S.settings, m.settings||{});
+        S.meta = Object.assign(S.meta, m.meta||{});
+        if(Object.prototype.hasOwnProperty.call(m,'learn')) S.learn = m.learn;
+        if(Object.prototype.hasOwnProperty.call(m,'exam')) S.exam = m.exam;
+        if(m.clockOffset != null) S.clockOffset = m.clockOffset;
+      }
+      migrateItems(S.items);
+      DB_MODE = 'idb';
+      S.meta.idbBoots = Number(S.meta.idbBoots||0) + 1;
+      const removeOld = S.meta.idbBoots >= 2;
+      await idbPut('state', S);
+      if(removeOld){
+        try{ localStorage.removeItem(KEY); }catch(e){}
+      }
+      saveMeta();
+      return;
+    }
+    // 第一次升级：把 localStorage 里的数据整体迁进 IDB，并回读校验条数
+    DB_MODE = 'idb';
+    S.meta.idbBoots = 1;
+    await idbPut('state', S);
+    const back = await idbGet('state');
+    if(!back || !Array.isArray(back.items) || back.items.length !== S.items.length){
+      throw new Error('idb verify failed');
+    }
+    saveMeta();
+  }catch(e){
+    DB = null;
+    DB_MODE = 'local';
+  }
+}
+/** 页面隐藏/关闭前把待写的 IDB 落盘，避免最后一步丢失 */
+function flushSave(){
+  saveMeta();
+  if(DB_MODE === 'idb' && DB){
+    clearTimeout(idbTimer);
+    idbTimer = null;
+    idbPut('state', S).catch(()=>{});
+  }
+}
+window.addEventListener('pagehide', flushSave);
+document.addEventListener('visibilitychange', ()=>{ if(document.hidden) flushSave(); });
 
 /* ---- 自动备份：本地快照（最近 3 份） + 手机文档目录（每天 1 份） ---- */
 const SNAP_KEY = 'wordapp_snap_v1';
@@ -568,6 +712,11 @@ function backupPayload(){
 }
 function writeSnapshot(){
   try{
+    // 词库很大时先按条数拦截，避免为了判断大小去 stringify 几 MB 数据
+    if(S.items.length > 1200){
+      if(!S.meta.snapWarned) S.meta.snapWarned = true;
+      return;
+    }
     const data = backupPayload();
     if(data.length > 600000){
       // 词库很大时 localStorage 放不下快照。标记出来，别让用户以为还有 3 份。
@@ -3788,21 +3937,21 @@ function openWhatsNew(){
   S.settings.seen201 = true;
   S.settings.seen21 = true;
   S.settings.seen22 = true;
+  S.settings.seen221 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.2.0 更新';
+  $('#sheetTitle').textContent = '温故 2.2.1 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.2.0 数据安全</b><br>
-      · 学到一半退出/被系统回收，首页会出现「继续上次学习」，不再从头再来<br>
-      · 学习步骤、拼写输入自动落盘，最多丢最后 120ms<br>
-      · 词库分页，先显示 60 条，可「加载更多」，几千词不再一次渲染<br>
-      · 词库很大时本地快照会停用，并在「我的」明确提示，不再静默失效<br>
-      · 覆盖/合并/恢复备份前，会先把当前数据另存一份「恢复前-时间.json」<br>
-      · 导入备份会校验结构，异常的 JSON 不会直接覆盖数据<br><br>
+      <b style="color:var(--ink)">2.2.1 大容量存储</b><br>
+      · 词条、错题、天数、学习会话改存 IndexedDB，不再受 localStorage 5MB 限制<br>
+      · localStorage 只保留设置、词书、未完成学习会话，体积很小<br>
+      · 首次启动自动迁移旧数据，迁移后回读校验；旧数据保留到第二次成功启动才清理<br>
+      · 保存改为 250ms 合并写入，切后台/关页面时立即补写一次<br>
+      · 页面启动时先读 IndexedDB，加载期间显示「正在加载…」<br><br>
+      <b style="color:var(--ink)">2.2.0</b><br>
+      · 学习续学、词库分页、快照停用提示、恢复前自动备份、导入校验<br><br>
       <b style="color:var(--ink)">2.1</b><br>
-      · 11 本词书（四六级/考研/雅思/托福/GRE/词组）、中文搜索、按到期日排序、合并导入<br><br>
-      <b style="color:var(--ink)">2.0</b><br>
-      · FSRS-6 按遗忘概率排期；中→英拼写 + 三档评分 + 例句填空/听写
+      · 11 本词书（四六级/考研/雅思/托福/GRE/词组）、中文搜索、合并导入
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -4550,7 +4699,11 @@ $('#mask').addEventListener('click', closeSheet);
 /* ============================================================
    19. 启动
    ============================================================ */
-(function init(){
+(async function init(){
+  const hb = $('#homeBody');
+  if(hb) hb.innerHTML = '<div class="empty">正在加载…</div>';
+  // 先读 IndexedDB；首次升级会从 localStorage 迁移，校验通过才继续
+  await idbBoot();
   // 必须等 S 与日期工具都初始化后再迁移（load 阶段不能引用 today/fmt）
   migrateItems(S.items);
   applyTheme();
@@ -4559,7 +4712,7 @@ $('#mask').addEventListener('click', closeSheet);
   loadRoots();
   renderAll();
   showScreen('home');
-  save();   // 落盘一次，确保设置迁移/默认值写入本地
+  save();   // 落盘一次，确保设置迁移/默认值写入
   migrateImgs();
   fetch('version.json').then(r=>r.json()).then(v=>{
     if(v && v.version && String(v.version)!==APP_VERSION){ APP_VERSION = String(v.version); renderMe(); }
@@ -4568,7 +4721,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen22) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen221) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
