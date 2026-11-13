@@ -322,6 +322,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
       </button>
       <h1 style="font-size:16px" id="learnTitle">学习新词</h1>
       <div class="sp"></div>
+      <button class="btn" data-act="learnKnown" style="height:30px;padding:0 10px;font-size:12.5px;flex:0 0 auto;color:var(--brand);background:var(--brandSoft);border-color:transparent">直接学会</button>
       <span style="font-size:12.5px;color:var(--ink3)" id="learnCount"></span>
     </div>
     <div class="stage" id="learnStage"></div>
@@ -440,7 +441,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.2.2';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.3.0';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -459,7 +460,7 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:0, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, fsrsDR:0.9,
+    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, fsrsDR:0.9,
     book:'', bookName:''
   },
   clockOffset: 0,
@@ -558,6 +559,7 @@ function load(){
   }catch(e){ return JSON.parse(JSON.stringify(DEFAULTS)); }
 }
 let saveTimer = null, idbTimer = null, DB = null, DB_MODE = 'local';
+let idbFailNotified = false, metaFailNotified = false;
 function readMeta(){
   try{ return JSON.parse(localStorage.getItem(META_KEY) || 'null'); }catch(e){ return null; }
 }
@@ -568,7 +570,12 @@ function saveMeta(){
       v:APP_VERSION, saved:Date.now(), settings:S.settings, clockOffset:S.clockOffset,
       meta:S.meta, learn:S.learn, exam:S.exam, counts:{items:S.items.length, mistakes:S.mistakes.length}
     }));
-  }catch(e){}
+  }catch(e){
+    if(!metaFailNotified){
+      metaFailNotified = true;
+      setTimeout(()=>toast('设置/进度保存失败，请先导出备份'), 0);
+    }
+  }
 }
 function save(){
   if(saveTimer){ clearTimeout(saveTimer); saveTimer = null; }
@@ -577,7 +584,12 @@ function save(){
     clearTimeout(idbTimer);
     idbTimer = setTimeout(()=>{
       idbTimer = null;
-      idbPut('state', S).catch(()=>{});
+      idbPut('state', S).catch(()=>{
+        if(!idbFailNotified){
+          idbFailNotified = true;
+          toast('数据保存失败，请先导出备份');
+        }
+      });
     }, 250);
   }else{
     try{ localStorage.setItem(KEY, JSON.stringify(S)); }
@@ -687,7 +699,12 @@ function flushSave(){
   if(DB_MODE === 'idb' && DB){
     clearTimeout(idbTimer);
     idbTimer = null;
-    idbPut('state', S).catch(()=>{});
+    idbPut('state', S).catch(()=>{
+      if(!idbFailNotified){
+        idbFailNotified = true;
+        toast('数据保存失败，请先导出备份');
+      }
+    });
   }
 }
 window.addEventListener('pagehide', flushSave);
@@ -1178,6 +1195,7 @@ function persistLearn(){
     date: learn.date || today(),
     ids: learn.ids.slice(),
     idx: learn.idx,
+    known: Math.max(0, Number(learn.known)||0),
     phase: learn.phase,
     revealed: !!learn.revealed,
     quiz: Array.isArray(learn.quiz) ? learn.quiz.slice() : null,
@@ -1203,6 +1221,7 @@ function resumeLearn(){
     date: l.date || today(),
     ids,
     idx: Math.min(Math.max(0, Number(l.idx)||0), ids.length),
+    known: Math.max(0, Number(l.known)||0),
     phase: LEARN_PHASES.indexOf(l.phase) >= 0 ? l.phase : 'meet',
     revealed: !!l.revealed,
     quiz: Array.isArray(l.quiz) ? l.quiz : null,
@@ -1260,6 +1279,10 @@ const PHASE_NAME = {meet:'认识新词', recall:'回想一下', quiz:'选出释�
 async function startLearn(){
   if(S.learn && Array.isArray(S.learn.ids) && S.learn.ids.length &&
      !confirm('还有一次未完成的学习，开始新的会覆盖它，继续？')) return;
+  const dueNow = dueItems();
+  const capNow = Math.max(5, Number(S.settings.paperCap)||40);
+  if(dueNow.length > capNow &&
+     !confirm(`还有 ${dueNow.length} 个词到期，今天计划 ${capNow} 个。建议先复习积压，仍要学新词吗？`)) return;
   if(S.settings.book){
     await loadBooks();
     const target = Math.max(0, Number(S.settings.newPerDay)||30);
@@ -1270,11 +1293,12 @@ async function startLearn(){
     }
   }
   const list = newItems().slice(0, Number(S.settings.newPerDay)||30);
-  if(!list.length){ toast('没有待学的新词'); return; }
+  if(!list.length){ toast('没有待学的新词，换一本词书试试'); openBooks(); return; }
   learn = {
     date: today(),
     ids: list.map(i=>i.id),
     idx: 0,
+    known: 0,
     phase: 'meet',
     revealed: false,
     quiz: null,
@@ -1300,9 +1324,12 @@ function renderLearn(){
   if(!it){ learn.idx++; return renderLearn(); }
 
   const pi = LEARN_PHASES.indexOf(learn.phase);
-  const pct = Math.round((learn.idx + pi/LEARN_PHASES.length) / total * 100);
+  // 「直接学会」会从队列里移除，已完成数单独累计，进度条才不会倒退
+  const knownN = Math.max(0, Number(learn.known)||0);
+  const totalAll = total + knownN;
+  const pct = Math.round((knownN + learn.idx + pi/LEARN_PHASES.length) / Math.max(1,totalAll) * 100);
   $('#learnTitle').textContent = PHASE_NAME[learn.phase] || '学习';
-  $('#learnCount').textContent = (learn.idx+1)+' / '+total;
+  $('#learnCount').textContent = (knownN + learn.idx + 1)+' / '+totalAll;
 
   const phon = phonOf(it.en);
   const ex = itemEx(it);
@@ -1506,6 +1533,48 @@ function finishLearn(){
   save();
   goHome();
   if(n) toast('今天学了 '+n+' 个新词'+(weak?`，${weak} 个会重点复习`:'')+'，明天开始复习');
+}
+/** 直接学会：跳过四阶段，按「简单」给一个较长间隔，之后仍由 FSRS 正常复习 */
+function markKnown(id, fromLearn){
+  const it = byId(id);
+  if(!it) return;
+  const t = today();
+  const g = 4;
+  const s = Math.max(1, fsrsS0(g));
+  const due = addD(t, fsrsIvl(s));
+  it.learned = true;
+  if(it.status !== 'graduated') it.status = 'active';
+  it.fsrs = {d:fsrsD0(g), s, reps:1, lapses:0, state:2, last:Date.now(), due,
+             ivl:Math.max(1, diffD(t, due)), lastGrade:g};
+  it.nextDate = due;
+  it.stage = 0; it.maxStage = 0;
+  it.learnRounds = Math.max(1, it.learnRounds||0);
+  it.updatedAt = Date.now();
+  const d = S.days[t] || {ans:0, right:0, items:0};
+  d.items = (d.items||0) + 1;
+  S.days[t] = d;
+  if(fromLearn && learn){
+    const i = learn.ids.indexOf(id);
+    if(i >= 0) learn.ids.splice(i,1);
+    learn.known = Math.max(0, Number(learn.known)||0) + 1;
+    learn.quiz = null; learn.revealed = false; learn.text = ''; learn.copy = false;
+    if(!learn.ids.length){
+      learn = null; S.learn = null; save(); goHome();
+      toast('已直接学会，这次学习完成');
+      return;
+    }
+    if(learn.idx >= learn.ids.length){
+      // 当前是最后一个，前面的都已完成，直接结束这次学习
+      learn = null; S.learn = null; save(); goHome();
+      toast('已直接学会，这次学习完成');
+      return;
+    }
+    persistLearn(); save(); renderLearn();
+    toast('已直接学会，'+diffD(t,due)+' 天后再复习');
+  }else{
+    save(); closeSheet(); renderAll();
+    toast('已直接学会，'+diffD(t,due)+' 天后再复习');
+  }
 }
 
 /* ============================================================
@@ -2299,12 +2368,15 @@ function renderHome(){
   const rec = S.days[t] || {ans:0,right:0};
   const undone = (S.exam && S.exam.date===t && !S.exam.done && (S.exam.ids||[]).length) ? S.exam : null;
   const lp = (S.learn && Array.isArray(S.learn.ids) && S.learn.ids.length) ? S.learn : null;
+  const capNow = Math.max(5, Number(S.settings.paperCap)||40);
+  const deferredNow = Math.max(0, due.length - capNow);
 
   let html = `
     <div class="hero">
       <div class="d">${t}　${['周日','周一','周二','周三','周四','周五','周六'][parseD(t).getDay()]}</div>
       <div class="big">${due.length}</div>
       <div class="sub">个词到期${fresh.length?`　·　${fresh.length} 个新词待学`:''}${rec.ans?`　·　今天已练 ${rec.ans}`:''}</div>
+      ${deferredNow?`<div class="sub" style="opacity:.82;margin-top:4px">今天计划 ${capNow} 个，剩 ${deferredNow} 个顺延</div>`:''}
       <div class="row">
         <button data-act="startReview">${undone?'继续复习':(due.length?'开始复习':'自由复习')}</button>
         ${fresh.length?`<button class="ghost" data-act="startLearn">学新词</button>`:''}
@@ -2316,6 +2388,7 @@ function renderHome(){
         <div style="font-weight:650">继续上次学习</div>
         <div style="font-size:12px;color:var(--ink3);margin-top:2px">第 ${Math.min((Number(lp.idx)||0)+1, lp.ids.length)} / ${lp.ids.length} 个 · ${PHASE_NAME[lp.phase]||'学习'}</div>
       </div>
+      <button class="btn" data-act="dropLearn" style="height:30px;padding:0 10px;font-size:12px;color:var(--ink3);flex:0 0 auto">放弃</button>
       <div style="color:var(--brand);font-weight:650;font-size:13px">继续 ›</div>
     </div>`:''}
 
@@ -2446,12 +2519,17 @@ async function openBooks(){
       </div>`;
     });
   });
-  html += `<div style="display:flex;gap:10px;margin-top:16px">
-    <button class="btn" data-act="bookAdd">加入 100 个</button>
-    <button class="btn primary" data-act="bookLearn">开始学这本</button>
-  </div>
-  <p class="tip" style="text-align:center">「加入」只把词放进词库；「开始学」按每日新词上限自动取词。</p>`;
+  html += `<p class="tip" style="text-align:center">「加入」只把词放进词库；「开始学」按每日新词上限自动取词。</p>`;
   $('#sheetBody').innerHTML = html;
+  // 按钮放在滚动区外，固定在弹层底部，避免滚动时压住列表/提示
+  const oldFoot = $('#sheet .bookfoot');
+  if(oldFoot) oldFoot.remove();
+  const foot = document.createElement('div');
+  foot.className = 'bookfoot';
+  foot.style.cssText = 'flex:0 0 auto;background:var(--card);border-top:1px solid var(--line);padding:10px 18px;display:flex;gap:10px;z-index:2';
+  foot.innerHTML = `<button class="btn" data-act="bookAdd">加入 100 个</button>
+    <button class="btn primary" data-act="bookLearn">开始学这本</button>`;
+  $('#sheet').appendChild(foot);
 }
 function pickBook(id){
   const bk = bookById(id);
@@ -2477,9 +2555,8 @@ function bookLearn(){
 /* ============================================================
    13. 词库
    ============================================================ */
-let wordFilter = '', tagFilter = '', wordSort = 'recent', wordShown = 60;
+let wordFilter = '', tagFilter = '', wordSort = 'recent', wordShown = 60, wordSearchT = null;
 function renderWords(){
-  wordShown = 60;
   $('#wordsCount').textContent = S.items.length + ' 个';
   if(!S.items.length){
     $('#wordsBody').innerHTML = `<div class="empty"><b>还没有生词</b>点右下角 + 添加，或从词典查一个词</div>`;
@@ -2502,7 +2579,11 @@ function renderWords(){
     ${tagFilter?`<button class="btn primary" style="height:40px;font-size:14px;margin-bottom:10px" data-act="freeTag" data-tag="${esc(tagFilter)}">复习 #${esc(tagFilter)} 的词</button>`:''}
     <div id="wordList"></div>`;
   const inp = $('#wSearch');
-  inp.addEventListener('input', e=>{ wordFilter = e.target.value.toLowerCase(); wordShown = 60; renderWordList(); });
+  inp.addEventListener('input', e=>{
+    const v = e.target.value.toLowerCase();
+    clearTimeout(wordSearchT);
+    wordSearchT = setTimeout(()=>{ wordFilter = v; wordShown = 60; renderWordList(); }, 140);
+  });
   renderWordList();
 }
 function renderWordList(){
@@ -2669,6 +2750,8 @@ let misFilter = {q:'', subject:'', cause:'', fav:false, book:'', topic:''};
 let misPage = 1;
 const MIS_PAGE = 50;
 let misShowDone = false;
+let misDoneShown = 50;
+let misSearchT = null;
 let editM = {subject:'物理', cause:'', img:''};
 let addImg = '';
 let addCause = '';
@@ -2895,7 +2978,11 @@ function renderMistakes(){
     <div id="misDone"></div>`;
 
   const inp = $('#misSearch');
-  if(inp) inp.addEventListener('input', e=>{ misFilter.q = e.target.value; misPage = 1; renderMisList(); });
+  if(inp) inp.addEventListener('input', e=>{
+    const v = e.target.value;
+    clearTimeout(misSearchT);
+    misSearchT = setTimeout(()=>{ misFilter.q = v; misPage = 1; renderMisList(); }, 140);
+  });
   renderMisList();
 }
 
@@ -2939,7 +3026,10 @@ function renderMisList(){
       <div class="zh">${misShowDone?'点击收起':'点击查看归档'}</div></div>
       <div style="color:var(--ink3)">${misShowDone?'⌃':'›'}</div>
     </button>
-    ${misShowDone?doneList.map(misItemHTML).join(''):''}` : '';
+    ${misShowDone?doneList.slice(0, misDoneShown).map(misItemHTML).join('')
+      + (doneList.length > misDoneShown
+        ? `<button class="btn" data-act="misDoneMore" style="width:100%;height:38px;font-size:13px;margin-bottom:8px">加载更多已完成（还有 ${doneList.length-misDoneShown} 道）</button>`
+        : '') : ''}` : '';
 }
 
 function toggleFav(id){
@@ -3271,6 +3361,8 @@ function markMrev(level, id){
   }else{
     mrev.counts.bad++;
     m.failCount = (m.failCount||0)+1;
+    // 最后一轮还不会：退一轮，不要第二天再点一次「做完了」就归档
+    if((m.stage||0) >= mistakeGaps().length - 1) m.stage = Math.max(0, (m.stage||0)-1);
     m.nextDate = addD(t, 1);
   }
   m.updatedAt = Date.now();
@@ -3939,18 +4031,24 @@ function openWhatsNew(){
   S.settings.seen22 = true;
   S.settings.seen221 = true;
   S.settings.seen222 = true;
+  S.settings.seen230 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.2.2 更新';
+  $('#sheetTitle').textContent = '温故 2.3.0 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
+      <b style="color:var(--ink)">2.3.0 少一点被积压劝退</b><br>
+      · 学习页和词条详情新增「直接学会」：认识的词一键跳过，按 4 天起排复习<br>
+      · 首页显示「今天计划 N 个，剩 M 个顺延」，当天不会无限堆量<br>
+      · 到期词明显多于日计划时，学新词前会先提醒先清积压<br>
+      · 未完成的学习可以「放弃」，不再每次启动都被追问<br>
+      · 词书面板按钮固定在底部，滚动选书时不会误点<br>
+      · 词库/错题列表保留浏览位置，加载更多后切走再回来不重置<br>
+      · 错题最后一轮还不会时退一轮，第二天不会再点一次就被归档<br>
+      · 数据保存失败会明确提示，避免白白丢进度<br><br>
       <b style="color:var(--ink)">2.2.2 导出图片修复</b><br>
-      · 导出前先尝试把旧的 base64 图片迁到 IndexedDB<br>
-      · 旧格式图片也会计入「含 N 张图片」，不再显示 0 张<br>
-      · 读不到的图片会明确提示「N 张读取失败」，不再静默忽略<br><br>
+      · 导出会统计旧格式图片，读不到的图片明确提示<br><br>
       <b style="color:var(--ink)">2.2.1 大容量存储</b><br>
-      · 主数据改存 IndexedDB，去掉 localStorage 5MB 限制；首次启动自动迁移并回读校验<br><br>
-      <b style="color:var(--ink)">2.2.0</b><br>
-      · 学习续学、词库分页、快照停用提示、恢复前自动备份、导入校验
+      · 主数据改存 IndexedDB，去掉 localStorage 5MB 限制
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -4095,8 +4193,14 @@ async function lookupFill(){
 /* ============================================================
    16. 弹层 / 面板
    ============================================================ */
-function openSheet(){ $('#sheet').classList.add('on'); $('#mask').classList.add('on'); }
-function closeSheet(){ $('#sheet').classList.remove('on'); $('#mask').classList.remove('on'); }
+function openSheet(){
+  const f = $('#sheet .bookfoot'); if(f) f.remove();
+  $('#sheet').classList.add('on'); $('#mask').classList.add('on');
+}
+function closeSheet(){
+  const f = $('#sheet .bookfoot'); if(f) f.remove();
+  $('#sheet').classList.remove('on'); $('#mask').classList.remove('on');
+}
 
 function openDetail(id){
   const it = byId(id);
@@ -4126,6 +4230,7 @@ function openDetail(id){
     <div style="display:flex;gap:10px;margin:16px 0">
       <button class="btn primary" data-act="edit" data-id="${it.id}" style="height:42px;font-size:13.5px">编辑</button>
       <button class="btn" data-act="fav" data-id="${it.id}" style="height:42px;font-size:13.5px">${it.fav?'取消收藏':'收藏'}</button>
+      ${!it.learned?`<button class="btn" data-act="markKnown" data-id="${it.id}" style="height:42px;font-size:13.5px;color:var(--brand)">直接学会</button>`:''}
       ${it.status==='graduated'?`<button class="btn" data-act="recall" data-id="${it.id}" style="height:42px;font-size:13.5px">召回</button>`:''}
       <button class="btn" data-act="del" data-id="${it.id}" style="height:42px;font-size:13.5px;color:var(--bad)">删除</button>
     </div>
@@ -4201,13 +4306,13 @@ async function doExport(){
   try{ await migrateImgs(); }catch(e){}
   const out = JSON.parse(JSON.stringify(S)); out.exam = null; out.imgs = {};
   let n = 0, missing = 0;
+  const tasks = [];
   for(const m of S.mistakes){
     const k = imgKeyOf(m.img);
     if(k){
-      try{
-        const d = await imgGet(k);
-        if(d){ out.imgs[k] = d; n++; }else{ missing++; }
-      }catch(e){ missing++; }
+      tasks.push(imgGet(k).then(d=>{
+        if(d){ out.imgs[k] = d; n++; } else missing++;
+      }).catch(()=>{ missing++; }));
     }else if(m.img && /^data:image\//.test(m.img)){
       n++;
     }else if(m.img){
@@ -4215,6 +4320,7 @@ async function doExport(){
       missing++;
     }
   }
+  await Promise.all(tasks);
   download(`温故备份-${today()}.json`, JSON.stringify(out,null,2));
   toast('已导出，含 '+n+' 张图片'+(missing?`，${missing} 张读取失败`:''));
 }
@@ -4473,10 +4579,10 @@ document.addEventListener('click', e=>{
   if(ff){ misFilter.fav = !misFilter.fav; misPage = 1; renderMistakes(); return; }
 
   const tf = e.target.closest('[data-tagfilter]');
-  if(tf){ tagFilter = tf.dataset.tagfilter || ''; renderWords(); return; }
+  if(tf){ tagFilter = tf.dataset.tagfilter || ''; wordShown = 60; renderWords(); return; }
 
   const ws = e.target.closest('[data-wsort]');
-  if(ws){ wordSort = ws.dataset.wsort; renderWords(); return; }
+  if(ws){ wordSort = ws.dataset.wsort; wordShown = 60; renderWords(); return; }
 
   const md = e.target.closest('[data-misdetail]');
   if(md){ openMistakeDetail(md.dataset.misdetail); return; }
@@ -4577,7 +4683,8 @@ document.addEventListener('click', e=>{
     case 'quitMrev': mrev=null; goHome(); break;
     case 'doneMrev': doneMrev(); break;
     case 'misMore': misPage++; renderMisList(); break;
-    case 'toggleDone': misShowDone = !misShowDone; renderMisList(); break;
+    case 'misDoneMore': misDoneShown += 50; renderMisList(); break;
+    case 'toggleDone': misShowDone = !misShowDone; if(misShowDone) misDoneShown = 50; renderMisList(); break;
     case 'editMistake': openEditMistake(t.dataset.id); break;
     case 'saveMistake': saveMistake(t.dataset.id); break;
     case 'memNow': closeSheet(); startMrev([t.dataset.id]); break;
@@ -4644,6 +4751,13 @@ document.addEventListener('click', e=>{
     case 'speak': speak(t.dataset.w); break;
     case 'speakS': speak(t.dataset.s); break;
     case 'meetNext': learnNext(); break;
+    case 'learnKnown': if(learn) markKnown(learn.ids[learn.idx], true); break;
+    case 'markKnown': markKnown(t.dataset.id, false); break;
+    case 'dropLearn': {
+      if(!confirm('放弃这次未完成的学习？')) break;
+      learn = null; S.learn = null; save(); renderHome();
+      toast('已放弃这次学习'); break;
+    }
     case 'reveal': if(learn){ learn.revealed=true; persistLearn(); renderLearn(); } break;
     case 'recallYes': learnNext(); break;
     case 'recallNo': if(learn){ learn.wrong[learn.ids[learn.idx]]=true; persistLearn(); learnNext(); } break;
@@ -4733,7 +4847,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen222) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen230) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
