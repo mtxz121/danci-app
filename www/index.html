@@ -440,7 +440,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.2.1';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.2.2';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -459,7 +459,7 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:0, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, fsrsDR:0.9,
+    newPerDay:30, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, fsrsDR:0.9,
     book:'', bookName:''
   },
   clockOffset: 0,
@@ -3938,20 +3938,19 @@ function openWhatsNew(){
   S.settings.seen21 = true;
   S.settings.seen22 = true;
   S.settings.seen221 = true;
+  S.settings.seen222 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.2.1 更新';
+  $('#sheetTitle').textContent = '温故 2.2.2 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
+      <b style="color:var(--ink)">2.2.2 导出图片修复</b><br>
+      · 导出前先尝试把旧的 base64 图片迁到 IndexedDB<br>
+      · 旧格式图片也会计入「含 N 张图片」，不再显示 0 张<br>
+      · 读不到的图片会明确提示「N 张读取失败」，不再静默忽略<br><br>
       <b style="color:var(--ink)">2.2.1 大容量存储</b><br>
-      · 词条、错题、天数、学习会话改存 IndexedDB，不再受 localStorage 5MB 限制<br>
-      · localStorage 只保留设置、词书、未完成学习会话，体积很小<br>
-      · 首次启动自动迁移旧数据，迁移后回读校验；旧数据保留到第二次成功启动才清理<br>
-      · 保存改为 250ms 合并写入，切后台/关页面时立即补写一次<br>
-      · 页面启动时先读 IndexedDB，加载期间显示「正在加载…」<br><br>
+      · 主数据改存 IndexedDB，去掉 localStorage 5MB 限制；首次启动自动迁移并回读校验<br><br>
       <b style="color:var(--ink)">2.2.0</b><br>
-      · 学习续学、词库分页、快照停用提示、恢复前自动备份、导入校验<br><br>
-      <b style="color:var(--ink)">2.1</b><br>
-      · 11 本词书（四六级/考研/雅思/托福/GRE/词组）、中文搜索、合并导入
+      · 学习续学、词库分页、快照停用提示、恢复前自动备份、导入校验
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -4198,13 +4197,26 @@ function download(name, text, mime){
   }catch(e){ toast('导出失败'); }
 }
 async function doExport(){
+  // 兼容 2.0 之前的 base64 图片：先尝试迁到 IndexedDB，失败也仍然留在 JSON 里
+  try{ await migrateImgs(); }catch(e){}
   const out = JSON.parse(JSON.stringify(S)); out.exam = null; out.imgs = {};
+  let n = 0, missing = 0;
   for(const m of S.mistakes){
     const k = imgKeyOf(m.img);
-    if(k){ try{ const d = await imgGet(k); if(d) out.imgs[k] = d; }catch(e){} }
+    if(k){
+      try{
+        const d = await imgGet(k);
+        if(d){ out.imgs[k] = d; n++; }else{ missing++; }
+      }catch(e){ missing++; }
+    }else if(m.img && /^data:image\//.test(m.img)){
+      n++;
+    }else if(m.img){
+      // blob:/file: 这类引用无法跨设备恢复，明确提示而不是静默算 0
+      missing++;
+    }
   }
   download(`温故备份-${today()}.json`, JSON.stringify(out,null,2));
-  toast('已导出，含 '+Object.keys(out.imgs).length+' 张图片');
+  toast('已导出，含 '+n+' 张图片'+(missing?`，${missing} 张读取失败`:''));
 }
 function doImport(){
   $('#sheetTitle').textContent='导入备份';
@@ -4571,20 +4583,20 @@ document.addEventListener('click', e=>{
     case 'memNow': closeSheet(); startMrev([t.dataset.id]); break;
     case 'pickImg': pickImage(data=>{
       const key = 'i'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-      imgPut(key, data).then(()=>{
-        const ref = 'idb:'+key;
-        if(imgTarget==='add'){
-          addImg = ref;
-          const box = $('#addImgBox');
-          if(box) box.innerHTML = `<img src="${data}" style="max-width:100%;max-height:140px;border-radius:10px;margin:8px 0">`;
-          const h = $('#addImgHint');
-          if(h) h.textContent = '已选 1 张';
-        }else{
-          editM.img = ref;
-          const box = $('#epImgBox');
-          if(box) box.innerHTML = `<img src="${data}" style="max-width:100%;max-height:160px;border-radius:10px;margin:8px 0">`;
-        }
-      }).catch(()=>toast('图片保存失败'));
+      // 先把 base64 放进待保存字段：即使 IDB 还没写完就点保存，图片也不会丢
+      if(imgTarget==='add'){
+        addImg = data;
+        const box = $('#addImgBox');
+        if(box) box.innerHTML = `<img src="${data}" style="max-width:100%;max-height:140px;border-radius:10px;margin:8px 0">`;
+        const h = $('#addImgHint');
+        if(h) h.textContent = '已选 1 张';
+        imgPut(key, data).then(()=>{ if(addImg===data) addImg = 'idb:'+key; }).catch(()=>{});
+      }else{
+        editM.img = data;
+        const box = $('#epImgBox');
+        if(box) box.innerHTML = `<img src="${data}" style="max-width:100%;max-height:160px;border-radius:10px;margin:8px 0">`;
+        imgPut(key, data).then(()=>{ if(editM.img===data) editM.img = 'idb:'+key; }).catch(()=>{});
+      }
     }); break;
     case 'clearImg': editM.img=''; { const b=$('#epImgBox'); if(b) b.innerHTML=''; } break;
     case 'delMistake': {
@@ -4721,7 +4733,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen221) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen222) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
