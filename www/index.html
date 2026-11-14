@@ -444,7 +444,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.5.0';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.6.0';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -463,7 +463,7 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:15, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:7, paperCap:60, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, fsrsDR:0.9,
+    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, fsrsDR:0.9,
     book:'', bookName:''
   },
   clockOffset: 0,
@@ -476,12 +476,14 @@ const DEFAULTS = {
   spellHeat: {}
 };
 
-/** 时长档：一键设定每天学多少新词 / 复习多少（复习预算 ≈ 新词 × 8，长线不积压） */
-const SESSION_PRESETS = {
-  5:  {newPerDay:5,  paperCap:40},
-  15: {newPerDay:7,  paperCap:60},
-  30: {newPerDay:10, paperCap:80}
+/** 2.6 周节奏：平日攒进度，周六清账，周日加词。单词复习和错题共用当日预算。 */
+const WEEK_PLAN = {
+  weekday: {name:'普通日', newWords:7,  review:40, misFloor:4, misCap:8},
+  sat:     {name:'清账日', newWords:0,  review:80, misFloor:0, misCap:20},
+  sun:     {name:'加词日', newWords:12, review:80, misFloor:0, misCap:20}
 };
+const WEEK_NEW_TOTAL = 47;   // 7×5 + 12
+const WEEK_REVIEW_TOTAL = 360; // 40×5 + 80×2
 /** 错题本：语数英物化地，按间隔档复习 4 遍 */
 const SUBJECTS = ['语文','数学','英语','物理','化学','地理'];
 /** 错题本间隔档：按天数递进，最后一遍之后归档 */
@@ -1056,10 +1058,27 @@ function dueItems(){
 }
 
 /* ============================================================
-   7.4 每日总预算：单词复习 + 错题共用一份
+   7.4 每日总预算：按周节奏分配，单词复习 + 错题共用一份
+   周一–周五 7 新词 / 40 复习（错题至少 4 道，最多 8）
+   周六 0 新词 / 80 复习（清账日，错题最多 20）
+   周日 12 新词 / 80 复习（加词日，错题最多 20）
    ============================================================ */
-/** 基础预算（返程模式会临时放大） */
-function dayBaseBudget(){ return Math.max(5, Number(S.settings.paperCap)||60); }
+/** 今天属于哪一类日子 */
+function dayKind(dstr){
+  const w = parseD(dstr || today()).getDay();
+  return w===6 ? 'sat' : w===0 ? 'sun' : 'weekday';
+}
+function todayPlan(){ return WEEK_PLAN[dayKind()]; }
+function isWeekend(){ return dayKind()!=='weekday'; }
+/** 今天的新词目标：平日 7，周六 0，周日 12 */
+function dayNewTarget(){ return todayPlan().newWords; }
+/** 基础复习预算（返程模式会临时放大） */
+function dayBaseBudget(){ return todayPlan().review; }
+/** 本周周一 */
+function weekStart(){
+  const t = today();
+  return addD(t, -((parseD(t).getDay()+6)%7));
+}
 /** 最近一个有学习记录的日子（不含今天），用于判断断更 */
 function lastStudyDay(){
   const t = today();
@@ -1091,6 +1110,17 @@ function dayUsed(){
   return Math.max(0, ans) + Math.max(0, Number(d.mis)||0);
 }
 function budgetLeft(){ return Math.max(0, dayBudget() - dayUsed()); }
+/** 今天已经翻过的错题数 */
+function misDoneToday(){ return Math.max(0, Number((S.days[today()]||{}).mis)||0); }
+/** 今天还能翻多少错题（平日 8，周末 20） */
+function misCapLeft(){ return Math.max(0, todayPlan().misCap - misDoneToday()); }
+/** 平日错题保底还差几道：先留出预算，单词复习不能全占 */
+function misFloorLeft(){
+  const floor = todayPlan().misFloor;
+  if(!floor) return 0;
+  const done = misDoneToday();
+  return Math.max(0, Math.min(floor, dueMistakes().length + done) - done);
+}
 /** 断更回来且积压明显时，询问一次要不要进返程模式 */
 function catchupOffer(){
   if(S.meta.catchup) return false;
@@ -1251,8 +1281,8 @@ function buildPaper(){
     lapses: (it.fsrs && it.fsrs.lapses) || 0
   }));
   scored.sort((a,b)=> (a.R-b.R) || (b.od-a.od) || (b.lapses-a.lapses));
-  // 单词复习只能用今天还没被错题占用的预算
-  const CAP = Math.max(0, Math.min(dayBudget(), budgetLeft()));
+  // 单词复习只能用今天还没被错题占用的预算；平日先给错题留出保底
+  const CAP = Math.max(0, Math.min(dayBudget(), budgetLeft() - misFloorLeft()));
   const picked = scored.slice(0, CAP).map(x=>x.it);
   return {ids:picked.map(i=>i.id), deferred:cands.length-picked.length, total:cands.length};
 }
@@ -1354,6 +1384,8 @@ async function startLearn(){
   if(S.learn && Array.isArray(S.learn.ids) && S.learn.ids.length &&
      !confirm('还有一次未完成的学习，开始新的会覆盖它，继续？')) return;
   if(catchupActive()){ toast('返程模式先清到期，清完自动恢复新词'); return; }
+  const newTarget = dayNewTarget();
+  if(!newTarget){ toast('周六是清账日，不加新词，把到期的和错题清一清'); return; }
   const dueNow = dueItems();
   const capNow = dayBudget();
   if(dueNow.length > capNow){
@@ -1362,14 +1394,14 @@ async function startLearn(){
   }
   if(S.settings.book){
     await loadBooks();
-    const target = Math.max(0, Number(S.settings.newPerDay)||30);
+    const target = newTarget;
     const freshN = newItems().length;
     if(target && freshN < target){
       const n = await topUpFromBook(target - freshN);
       if(n) toast(`从「${currentBookName()}」加入 ${n} 个新词`);
     }
   }
-  const list = newItems().slice(0, Number(S.settings.newPerDay)||30);
+  const list = newItems().slice(0, newTarget);
   if(!list.length){ toast('没有待学的新词，换一本词书试试'); openBooks(); return; }
   learn = {
     date: today(),
@@ -1831,7 +1863,10 @@ function startReview(){
     }
     const paper = buildPaper();
     if(!paper.ids.length){
-      if(dueItems().length){ toast('今天的任务量已经完成，明天再来'); return; }
+      if(dueItems().length){
+        if(misFloorLeft()>0){ toast(`先做 ${misFloorLeft()} 道错题，单词复习明天继续`); startMrev(); return; }
+        toast('今天的任务量已经完成，明天再来'); return;
+      }
       toast('今天没有到期的词，去自由复习吧');
       openFree();
       return;
@@ -2490,7 +2525,12 @@ function renderHome(){
   const undone = (S.exam && S.exam.date===t && !S.exam.done && (S.exam.ids||[]).length) ? S.exam : null;
   const lp = (S.learn && Array.isArray(S.learn.ids) && S.learn.ids.length) ? S.learn : null;
   const capNow = dayBudget();
+  const plan = todayPlan();
+  const catchOn = catchupActive();
   const misDueN = dueMistakes().length;
+  const misDone = misDoneToday();
+  const floorLeft = misFloorLeft();
+  const newTarget = dayNewTarget();
   const usedNow = dayUsed();
   const deferredNow = Math.max(0, due.length - capNow);
   const masterN = S.items.filter(i=>i.status==='graduated').length;
@@ -2499,28 +2539,36 @@ function renderHome(){
   const totalSeg = Math.max(1, masterN + learningN + due.length);
   const pctM = Math.round(masterN/totalSeg*100);
   const pctL = Math.round(learningN/totalSeg*100);
-  const usedAll = usedNow>=capNow && due.length>0;
-  const doneToday = (due.length===0 && usedNow>0) || usedAll;
-  const heroSub = due.length===0
+  const usedAll = usedNow >= capNow;
+  const tasksClear = due.length===0 && floorLeft===0;
+  const doneToday = floorLeft===0 && ((tasksClear && usedNow>0) || (usedAll && due.length>0));
+  const heroSub = floorLeft>0 && (due.length===0 || usedAll)
+    ? `${due.length?'单词今天先到这，':''}还差 ${floorLeft} 道错题才算完成`
+    : due.length===0
     ? (doneToday?'今天的词复习完了，明天见':'今天没有到期的词，想练可以自由复习')
     : usedAll
     ? `今天的预算用完了，还有 ${due.length} 个明天继续`
-    : `个词到期${fresh.length && !catchOn?`　·　${fresh.length} 个新词待学`:''}${rec.ans?`　·　今天已练 ${rec.ans}`:''}`;
-  const npd = Number(S.settings.newPerDay)||0;
-  const recNew = Math.max(2, Math.round(capNow/8));
-  const planTip = !S.meta.planTipShown && npd>=2 && npd*7 > capNow*1.15;
+    : `个词到期${fresh.length && newTarget>0?`　·　${fresh.length} 个新词待学`:''}${rec.ans?`　·　今天已练 ${rec.ans}`:''}`;
   const yest = addD(t,-1);
   const gapStreak = streakEndAt(addD(t,-2));
   const freezeN = gapStreak + 1 + (S.days[t] ? 1 : 0);
   const canFreeze = !S.days[yest] && gapStreak>=1 && freezeLeft()>0;
-  const catchOn = catchupActive();
   const catchAsk = catchupOffer();
   const catchCap = Math.min(150, Math.round(dayBaseBudget()*1.5));
   const catchDays = Math.max(1, Math.ceil(due.length / Math.max(1, catchCap*0.8)));
+  // 本周执行情况（周一开始）
+  const ws = weekStart();
+  let wNew=0, wAns=0, wMis=0;
+  for(let i=0;i<7;i++){
+    const r = S.days[addD(ws,i)] || {};
+    wNew += Number(r.items)||0;
+    wAns += Math.max(0, (Number(r.ans)||0) - (Number(r.free)||0));
+    wMis += Number(r.mis)||0;
+  }
 
   let html = `
     <div class="hero">
-      <div class="d">${t}　${['周日','周一','周二','周三','周四','周五','周六'][parseD(t).getDay()]}</div>
+      <div class="d">${t}　${['周日','周一','周二','周三','周四','周五','周六'][parseD(t).getDay()]}　·　${plan.name}</div>
       <div class="big">${doneToday?'✓':due.length}</div>
       <div class="sub">${heroSub}</div>
       ${deferredNow?`<div class="sub" style="opacity:.82;margin-top:4px">今天预算 ${capNow} 个，剩 ${deferredNow} 个顺延</div>`:''}
@@ -2535,8 +2583,8 @@ function renderHome(){
         <span><i style="display:inline-block;width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.32);margin-right:4px;vertical-align:1px"></i>待巩固 ${due.length}</span>
       </div>
       <div class="row">
-        <button data-act="startReview">${undone?'继续复习':(due.length?'开始复习':'自由复习')}</button>
-        ${fresh.length && !catchOn?`<button class="ghost" data-act="startLearn">学新词</button>`:''}
+        <button data-act="${due.length?'startReview':(misDueN?'startMrev':'startReview')}">${undone?'继续复习':(due.length?'开始复习':(misDueN?'开始错题':'自由复习'))}</button>
+        ${fresh.length && newTarget>0 && !catchOn?`<button class="ghost" data-act="startLearn">学 ${Math.min(fresh.length,newTarget)} 个新词</button>`:''}
       </div>
     </div>
 
@@ -2544,9 +2592,17 @@ function renderHome(){
       <div style="flex:1">
         <div style="font-size:13px;font-weight:650">今日任务</div>
         <div style="font-size:12px;color:var(--ink3);margin-top:2px">单词 ${due.length} · 错题 ${misDueN}　·　今日预算 ${capNow}</div>
-        <div style="font-size:11.5px;color:var(--ink3);margin-top:1px">先做的先算，超出顺延到明天</div>
+        <div style="font-size:11.5px;color:${floorLeft?'var(--warn)':'var(--ink3)'};margin-top:1px">${plan.misFloor?`错题保底 ${plan.misFloor} 道（已做 ${misDone}${floorLeft?`，还差 ${floorLeft}`:''}）`:`错题最多 ${plan.misCap} 道（已做 ${misDone}）`}</div>
       </div>
       <div style="font-size:12.5px;color:${usedNow>=capNow?'var(--ok)':'var(--ink2)'};font-weight:${usedNow>=capNow?'650':'400'}">已用 ${Math.min(usedNow,capNow)}/${capNow}</div>
+    </div>
+
+    <div class="mini" style="margin-bottom:14px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+        <div style="font-size:13px;font-weight:650">本周节奏</div>
+        <div style="font-size:11px;color:var(--ink3)">平日 7/40 · 周六 0/80 · 周日 12/80</div>
+      </div>
+      <div style="font-size:12px;color:var(--ink2);margin-top:4px">已学 ${wNew}/${WEEK_NEW_TOTAL} 新词 · 复习 ${wAns}/${WEEK_REVIEW_TOTAL} 次 · 错题 ${wMis} 道</div>
     </div>
 
     ${catchOn?`<div class="mini" style="border-color:var(--brand);margin-bottom:14px">
@@ -2561,15 +2617,6 @@ function renderHome(){
       <div style="display:flex;gap:8px;margin-top:10px">
         <button class="btn" data-act="catchupSnooze" style="height:34px;font-size:13px">按原计划</button>
         <button class="btn primary" data-act="catchupOn" style="height:34px;font-size:13px">开启返程</button>
-      </div>
-    </div>`:''}
-
-    ${planTip?`<div class="mini" style="border-color:var(--warn);margin-bottom:14px">
-      <div style="font-size:13.5px;font-weight:650">当前计划容易越攒越多</div>
-      <div style="font-size:12.5px;color:var(--ink2);margin-top:4px;line-height:1.65">每天 ${npd} 个新词，长期会堆出约 ${Math.round(npd*8)} 个复习/天，超过现在 ${capNow} 的预算。建议新词降到 ${recNew} 个，或把预算调到 ${Math.round(npd*8)}。</div>
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <button class="btn" data-act="planTipNo" style="height:34px;font-size:13px">以后再说</button>
-        <button class="btn primary" data-act="planTipFix" style="height:34px;font-size:13px">按预算调整</button>
       </div>
     </div>`:''}
 
@@ -2623,7 +2670,7 @@ function renderHome(){
   }
   if(S.meta.deferStreak>=3){
     html += `<div style="background:var(--warnSoft);color:var(--warn);border-radius:12px;padding:11px 14px;font-size:12.5px;margin-bottom:12px">
-      积压有点多了，建议减少每日新增量。</div>`;
+      连续几天有词顺延了：先清到期，暂时别批量直接学会或临时加词。</div>`;
   }
   if(undone){
     html += `<div style="background:var(--brandSoft);color:var(--brand);border-radius:12px;padding:11px 14px;font-size:12.5px;margin-bottom:12px">
@@ -2631,14 +2678,14 @@ function renderHome(){
   }
 
   html += `<div class="sect"><h3>今天要做的</h3></div>`;
-  if(!fresh.length && !due.length){
-    html += `<div class="empty"><b>今天的任务完成了</b>去词库添加一些新词吧</div>`;
+  if(!due.length && !misDueN && (newTarget===0 || !fresh.length)){
+    html += `<div class="empty"><b>${newTarget===0?'周六清账日，今天不加新词':'今天的任务完成了'}</b>${newTarget===0?'把到期的词和错题清一清就好':'去词库添加一些新词吧'}</div>`;
   }else{
-    if(fresh.length && !catchOn) html += `
+    if(fresh.length && newTarget>0 && !catchOn) html += `
       <div class="item" data-act="startLearn">
         <div style="width:38px;height:38px;border-radius:12px;background:var(--brandSoft);color:var(--brand);
           display:flex;align-items:center;justify-content:center;font-weight:700">新</div>
-        <div class="m"><div class="en">学习 ${Math.min(fresh.length, Number(S.settings.newPerDay)||30)} 个新词</div>
+        <div class="m"><div class="en">学习 ${Math.min(fresh.length, newTarget)} 个新词</div>
           <div class="zh">认识 → 回忆 → 辨义 → 默写</div></div>
         <div style="color:var(--ink3)">›</div>
       </div>`;
@@ -2672,7 +2719,8 @@ function renderHome(){
         <div style="width:38px;height:38px;border-radius:12px;background:var(--warnSoft);color:var(--warn);
           display:flex;align-items:center;justify-content:center;font-weight:700">错</div>
         <div class="m"><div class="en">今天要翻 ${misDue} 处${overdueCount()?`（逾期 ${overdueCount()}）`:''}</div>
-          <div class="zh">${esc(preview)}${misDue>2?' …':''}</div></div>
+          <div class="zh">${esc(preview)}${misDue>2?' …':''}</div>
+          <div class="mt">${plan.misFloor?`保底 ${plan.misFloor} 道`:`上限 ${plan.misCap} 道`} · 已做 ${misDone}${floorLeft?` · 还差 ${floorLeft}`:''}</div></div>
         <div style="color:var(--ink3)">›</div>
       </div>`;
   }
@@ -3532,12 +3580,17 @@ function startMrev(ids){
     ? ids.map(id=>mrevById(id)).filter(Boolean).sort(misSort)
     : dueMistakes();
   if(!list.length){ toast('今天没有要翻的错题'); return; }
-  // 和单词共用每日预算：默认按剩余额度排，单题「立即翻」不受限
+  // 和单词共用每日预算：平日最多 8 道、周末最多 20 道；单题「立即翻」不受限
   const single = Array.isArray(ids) && ids.length === 1;
   const left = budgetLeft();
-  if(left <= 0 && !single){ toast('今天的任务量已经完成，明天再来'); return; }
-  const picked = list.slice(0, single ? 1 : Math.max(1, left));
-  if(!single && picked.length < list.length) toast(`今天预算还剩 ${picked.length} 道，其余顺延`);
+  const capLeft = misCapLeft();
+  if(!single && (left <= 0 || capLeft <= 0)){
+    toast(left<=0 ? '今天的预算已经用完了，明天再来' : `今天错题做到 ${misDoneToday()} 道了，剩下的${isWeekend()?'明天':'周六'}继续`);
+    return;
+  }
+  const room = single ? 1 : Math.min(left, capLeft, list.length);
+  const picked = list.slice(0, Math.max(1, room));
+  if(!single && picked.length < list.length) toast(`今天还能做 ${picked.length} 道，其余顺延`);
   mrev = {ids:picked.map(m=>m.id), total:picked.length, counts:{ok:0,bad:0}, startedAt:Date.now()};
   $('#mrevTitle').textContent = '今日错题';
   showScreen('mrev');
@@ -3956,34 +4009,12 @@ function heatCells(){
     return `<i class="${r>0.45?'hot':''}" style="background:rgba(229,72,77,${a.toFixed(2)})">${l}</i>`;
   }).join('');
 }
-function setSession(m){
-  m = Number(m)||0;
-  S.settings.sessionMin = m;
-  const p = SESSION_PRESETS[m];
-  if(p){
-    S.settings.newPerDay = p.newPerDay;
-    S.settings.paperCap = p.paperCap;
-  }
-  // 换了时长档，今天还没做完的复习要按新上限重排
-  let reset = false;
-  if(S.exam && S.exam.date===today() && !S.exam.done){
-    S.exam = null; exam = null; reset = true;
-  }
-  save();
-  renderMe();
-  toast(p ? `已切换${m===5?'轻松':m===15?'标准':'冲刺'}：每天 ${p.newPerDay} 个新词 + ${p.paperCap} 个复习${reset?'，今日任务已重排':''}` : '已改为自定义数量');
-}
 function renderMe(){
   const days = Object.keys(S.days).length;
   const grad = S.items.filter(i=>i.status==='graduated').length;
   const hard = hardItems().length;
   const err = S.items.filter(i=>i.errCount>0).sort((a,b)=>b.errCount-a.errCount).slice(0,5);
   const snaps = snapshots();
-  // 档位高亮跟着实际数值走，避免「显示冲刺、实际 25/40」
-  const curPreset = Number(Object.keys(SESSION_PRESETS).find(k=>{
-    const p = SESSION_PRESETS[k];
-    return Number(S.settings.newPerDay)===p.newPerDay && Number(S.settings.paperCap)===p.paperCap;
-  }) || 0);
 
   let cal = '';
   for(let i=27;i>=0;i--){
@@ -4024,11 +4055,13 @@ function renderMe(){
     <div class="sect"><h3>拼写热力图</h3><span style="font-size:12px;color:var(--ink3)">越红越常拼错</span></div>
     <div class="heat">${heatCells()}</div>
 
-    <div class="sect"><h3>每日预算</h3><span style="font-size:12px;color:var(--ink3)">复习量决定新词量</span></div>
-    <div class="chips" style="margin:0 0 8px">
-      ${[0,5,15,30].map(m=>`<button class="chip sm ${curPreset===m?'on':''}" data-act="session" data-min="${m}">${m?(m===5?'轻松':m===15?'标准':'冲刺'):'自定义'}</button>`).join('')}
+    <div class="sect"><h3>学习节奏</h3><span style="font-size:12px;color:var(--ink3)">按周安排，不设手调</span></div>
+    <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:14px">
+      <div class="row" style="padding:9px 0"><div><div class="l">周一–周五 · 普通日</div><div class="s">7 个新词 · 40 个复习（单词和错题共用）</div></div><div style="font-size:12px;color:var(--warn);flex:0 0 auto">错题 ≥4</div></div>
+      <div class="row" style="padding:9px 0"><div><div class="l">周六 · 清账日</div><div class="s">不加新词 · 80 个复习</div></div><div style="font-size:12px;color:var(--ink3);flex:0 0 auto">错题 ≤20</div></div>
+      <div class="row" style="padding:9px 0"><div><div class="l">周日 · 加词日</div><div class="s">12 个新词 · 80 个复习</div></div><div style="font-size:12px;color:var(--ink3);flex:0 0 auto">错题 ≤20</div></div>
+      <p class="tip" style="margin:8px 0 0">一周合计 47 个新词、360 个复习、最多 80 道错题。平日先给错题留 4 个位置，单词复习不会把它挤掉。</p>
     </div>
-    <p class="tip" style="margin:0 0 14px">轻松 5 新词/40 复习 · 标准 7 新词/60 复习 · 冲刺 10 新词/80 复习。按这个比例，长期不会越攒越多。</p>
 
     <div class="sect"><h3>学习</h3></div>
     <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;margin-bottom:14px">
@@ -4042,10 +4075,6 @@ function renderMe(){
         <button class="switch ${S.settings.recallFirst?'on':''}" role="switch" aria-checked="${!!S.settings.recallFirst}" aria-label="先想后翻"><i></i></button></div>
       <div class="srow" data-set="theme"><div><div class="l">夜间模式</div><div class="s">护眼配色</div></div>
         <button class="switch ${S.settings.theme==='dark'?'on':''}" role="switch" aria-checked="${S.settings.theme==='dark'}" aria-label="夜间模式"><i></i></button></div>
-      <div class="row"><div><div class="l">每日新词上限</div><div class="s">每天最多学多少个新词，不含复习</div></div>
-        <input class="num-in" type="number" min="0" max="200" value="${S.settings.newPerDay}" data-num="newPerDay"></div>
-      <div class="row"><div><div class="l">单日复习上限</div><div class="s">单词和错题共用，超过顺延到次日</div></div>
-        <input class="num-in" type="number" min="5" max="180" value="${S.settings.paperCap}" data-num="paperCap"></div>
     </div>
 
     <div class="sect" style="margin:12px 0 8px"><h3>目标保持率</h3><span style="font-size:12px;color:var(--ink3)">越高复习越勤</span></div>
@@ -4305,13 +4334,13 @@ function openMonthReview(){
   const rate = ans ? Math.round(right/ans*100) : 0;
   let best = 0;
   ds.forEach(d=>{ best = Math.max(best, streakEndAt(d)); });
-  const cap = Math.max(5, Number(S.settings.paperCap)||60);
+  const cap = Math.round(WEEK_REVIEW_TOTAL/7);
   const perNew = studyDays ? items/studyDays : 0;
   const perAns = studyDays ? ans/studyDays : 0;
-  const planNew = Number(S.settings.newPerDay)||0;
+  const planNew = WEEK_NEW_TOTAL/7;
   const tip = !studyDays ? '这个月还没有记录，今天开始就算数。'
-    : perNew > Math.max(3, planNew*1.35) ? `平均每天新学 ${perNew.toFixed(1)} 个，比计划的 ${planNew} 个多，复习会被拖长；下个月可以稳一点。`
-    : perAns > cap*1.15 ? `平均每天复习 ${Math.round(perAns)} 次，已经超过 ${cap} 的预算，建议把新词调低一点。`
+    : perNew > planNew*1.35 ? `平均每天新学 ${perNew.toFixed(1)} 个，比周计划的 ${planNew.toFixed(1)} 个多，复习会被拖长；下个月可以稳一点。`
+    : perAns > cap*1.15 ? `平均每天复习 ${Math.round(perAns)} 次，已经超过 ${cap} 的日均预算，建议减少临时加词。`
     : `节奏很稳：平均每天新学 ${perNew.toFixed(1)} 个、复习 ${Math.round(perAns)} 次。`;
   $('#sheetTitle').textContent = '月度回顾 · '+m;
   $('#sheetBody').innerHTML = `
@@ -4324,7 +4353,7 @@ function openMonthReview(){
       </div>
       <div style="margin-top:12px">已掌握 <b style="color:var(--ink)">${grad}</b> 个 · 本月最长连续 <b style="color:var(--ink)">${best}</b> 天</div>
       <div style="margin-top:8px;padding:10px 12px;border-radius:12px;background:var(--brandSoft);color:var(--ink)">${tip}</div>
-      <div style="margin-top:10px;font-size:12px;color:var(--ink3)">下个月的每日预算：${cap} 个复习 · ${Number(S.settings.newPerDay)||0} 个新词</div>
+      <div style="margin-top:10px;font-size:12px;color:var(--ink3)">下个月照这个节奏：平日 7 新词/40 复习，周六清账，周日 12 新词/80 复习。</div>
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -4340,23 +4369,22 @@ function openWhatsNew(){
   S.settings.seen230 = true;
   S.settings.seen240 = true;
   S.settings.seen250 = true;
+  S.settings.seen260 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.5.0 更新';
+  $('#sheetTitle').textContent = '温故 2.6.0 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.5.0 一份预算，先把到期的清完</b><br>
-      · 单词复习和错题共用每日预算，首页显示「单词 X · 错题 Y · 已用 N/预算」<br>
-      · 断更 3 天以上回来，会问一次要不要开返程模式：暂停新词、预算临时 ×1.5、显示预计几天回到正轨<br>
-      · 直接学会按 8–11 天错开，批量学会前会确认，避免第 8 天一次性到期<br>
-      · 补签不再要求「今天还没学」，今天先学了也能补昨天<br>
-      · 卡住的错题自动多给 1–2 轮，不再永远卡在第 4 遍<br>
-      · 月度回顾按日均给建议，不再按总量误判<br>
-      · 快照改存 IndexedDB，保留 5 份，不再因为词多而停用<br>
-      · 词库批量支持全选，撤销条可以关闭<br><br>
+      <b style="color:var(--ink)">2.6.0 按周安排：平日稳、周六清账、周日加词</b><br>
+      · 周一–周五：7 个新词 + 40 个复习，错题至少 4 道、最多 8 道<br>
+      · 周六：不加新词，80 个复习，错题最多 20 道，专心清账<br>
+      · 周日：12 个新词，80 个复习，错题最多 20 道，补一周进度<br>
+      · 单词复习会给错题留出保底预算，不会把 4 道错题挤掉；没做够不算完成<br>
+      · 首页新增「本周节奏」，一周目标 47 个新词 / 360 个复习<br>
+      · 不再手动调每日数量，节奏固定，省得越调越乱<br><br>
+      <b style="color:var(--ink)">2.5.0</b><br>
+      · 单词和错题共用预算、返程模式、批量直接学会、IndexedDB 快照<br><br>
       <b style="color:var(--ink)">2.4.0</b><br>
-      · 每日预算三档、三段式进度、完成即收工、每月补签、月度回顾、批量直接学会<br><br>
-      <b style="color:var(--ink)">2.3.0</b><br>
-      · 直接学会、计划顺延、积压提醒、放弃续学
+      · 每日预算、三段式进度、每月补签、月度回顾
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -4997,7 +5025,6 @@ document.addEventListener('click', e=>{
     case 'openFree': openFree(); break;
     case 'freeTag': openFree(t.dataset.tag); break;
     case 'startFree': startFree(); break;
-    case 'session': setSession(t.dataset.min); break;
     case 'setDR': {
       S.settings.fsrsDR = Number(t.dataset.v)||0.9;
       save(); renderMe();
@@ -5149,15 +5176,6 @@ document.addEventListener('click', e=>{
       save(); renderHome();
       break;
     }
-    case 'planTipFix': {
-      const cap = Math.max(5, Number(S.settings.paperCap)||60);
-      S.settings.newPerDay = Math.max(2, Math.round(cap/8));
-      S.meta.planTipShown = true;
-      save(); renderHome(); renderMe();
-      toast('已把每天新词调到 '+S.settings.newPerDay+' 个');
-      break;
-    }
-    case 'planTipNo': S.meta.planTipShown = true; save(); renderHome(); break;
     case 'monthReview': openMonthReview(); break;
     case 'dropLearn': {
       if(!confirm('放弃这次未完成的学习？')) break;
@@ -5254,7 +5272,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen250) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen260) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
