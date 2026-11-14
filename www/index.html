@@ -2545,7 +2545,9 @@ function renderHome(){
   const heroSub = floorLeft>0 && (due.length===0 || usedAll)
     ? `${due.length?'单词今天先到这，':''}还差 ${floorLeft} 道错题才算完成`
     : due.length===0
-    ? (doneToday?'今天的词复习完了，明天见':'今天没有到期的词，想练可以自由复习')
+    ? (doneToday ? '今天的词复习完了，明天见'
+       : (fresh.length && newTarget>0 ? `今天没有到期的词，可以学 ${Math.min(fresh.length,newTarget)} 个新词`
+       : (misDueN ? `今天没有到期的词，有 ${misDueN} 道错题要翻` : '今天没有到期的词，想练可以自由复习')))
     : usedAll
     ? `今天的预算用完了，还有 ${due.length} 个明天继续`
     : `个词到期${fresh.length && newTarget>0?`　·　${fresh.length} 个新词待学`:''}${rec.ans?`　·　今天已练 ${rec.ans}`:''}`;
