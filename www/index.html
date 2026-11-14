@@ -444,7 +444,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.7.0';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.7.1';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -463,13 +463,13 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:15, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, fsrsDR:0.9,
+    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, fsrsDR:0.9,
     book:'', bookName:''
   },
   clockOffset: 0,
   items: [],
   days: {},
-  meta: { deferStreak:0, deferDate:'', snapWarned:false },
+  meta: { deferStreak:0, deferDate:'', snapWarned:false, noNewDate:'' },
   exam: null,
   learn: null,
   mistakes: [],
@@ -1072,8 +1072,9 @@ function dayKind(dstr){
 }
 function todayPlan(){ return WEEK_PLAN[dayKind()]; }
 function isWeekend(){ return dayKind()!=='weekday'; }
-/** 今天的新词目标：平日 7，周六 0，周日 12；积压时自动减半或暂停 */
+/** 今天的新词目标：平日 7，周六 0，周日 12；今天不学新词时为 0；积压时自动减半或暂停 */
 function dayNewTarget(lvl){
+  if(S.meta.noNewDate === today()) return 0;
   const base = todayPlan().newWords;
   if(!base) return 0;
   const level = lvl === undefined ? throttleLevel() : lvl;
@@ -1449,6 +1450,7 @@ async function startLearn(){
   if(S.learn && Array.isArray(S.learn.ids) && S.learn.ids.length &&
      !confirm('还有一次未完成的学习，开始新的会覆盖它，继续？')) return;
   if(catchupActive()){ toast('返程模式先清到期，清完自动恢复新词'); return; }
+  if(S.meta.noNewDate === today()){ toast('今天设了不学新词，想学先点「恢复」'); return; }
   const newTarget = dayNewTarget();
   if(!newTarget){
     if(!todayPlan().newWords) toast('周六是清账日，不加新词，把到期的和错题清一清');
@@ -2597,6 +2599,7 @@ function renderHome(){
   const catchOn = catchupActive();
   const throttle = catchOn ? false : throttleLevel();
   const newTarget = dayNewTarget(throttle);
+  const noNewToday = S.meta.noNewDate === t;
   const wordUsed = wordUsedToday();
   const wordLeft = wordBudgetLeft();
   const usedAll = wordLeft <= 0 && capNow > 0;
@@ -2624,7 +2627,8 @@ function renderHome(){
     ? `还差 ${newLeft} 个新词${wordsDone?'，单词已完成':''}`
     : due.length===0
     ? (doneToday ? '今天的任务完成了，明天见'
-       : (misDueN ? `今天没有到期的词，有 ${misDueN} 道错题要翻` : '今天没有到期的词，想练可以自由复习'))
+       : (noNewToday ? '今天不学新词，想练可以自由复习'
+       : (misDueN ? `今天没有到期的词，有 ${misDueN} 道错题要翻` : '今天没有到期的词，想练可以自由复习')))
     : wordsDone
     ? `今日完成 · ${deferredNow} 个词顺延到明天`
     : `个词到期${fresh.length && newTarget>0?`　·　${fresh.length} 个新词待学`:''}${rec.ans?`　·　今天已练 ${rec.ans}`:''}`;
@@ -2672,6 +2676,7 @@ function renderHome(){
         <div style="font-size:13px;font-weight:650">今日任务</div>
         <div style="font-size:12px;color:var(--ink3);margin-top:2px">单词 ${due.length} 到期 · 错题必做 ${mustLeft} · 等等 ${laterN}</div>
         <div style="font-size:11.5px;color:${mustLeft?'var(--warn)':'var(--ink3)'};margin-top:1px">单词 ${Math.min(wordUsed,capNow)}/${capNow} · 错题 ${mustDone}/${mustTotal}</div>
+        ${noNewToday?`<div style="font-size:11.5px;color:var(--ink3);margin-top:2px">今天不学新词　<button data-act="resumeNew" style="color:var(--brand);font-size:11.5px">恢复</button></div>`:''}
       </div>
       <div style="font-size:12.5px;color:${usedAll?'var(--ok)':'var(--ink2)'};font-weight:${usedAll?'650':'400'}">${usedAll?'单词完成':`单词剩 ${wordLeft}`}</div>
     </div>
@@ -2763,9 +2768,9 @@ function renderHome(){
       上次复习还没做完（已完成 ${Math.min(undone.ptr||0, undone.ids.length)} / ${undone.ids.length}），点「继续复习」接着来。</div>`;
   }
 
-  html += `<div class="sect"><h3>今天要做的</h3></div>`;
+  html += `<div class="sect"><h3>今天要做的</h3>${fresh.length && newTarget>0 && !catchOn?`<button data-act="skipNew">今天不学新词</button>`:''}</div>`;
   if(!due.length && !misDueN && (newTarget===0 || !fresh.length)){
-    html += `<div class="empty"><b>${newTarget===0?'周六清账日，今天不加新词':'今天的任务完成了'}</b>${newTarget===0?'把到期的词和错题清一清就好':'去词库添加一些新词吧'}</div>`;
+    html += `<div class="empty"><b>${noNewToday?'今天不学新词':(newTarget===0?'周六清账日，今天不加新词':'今天的任务完成了')}</b>${noNewToday?'今天不学新词，想练可以自由复习':(newTarget===0?'把到期的词和错题清一清就好':'去词库添加一些新词吧')}</div>`;
   }else{
     if(fresh.length && newTarget>0 && !catchOn) html += `
       <div class="item" data-act="startLearn">
@@ -3390,7 +3395,7 @@ function misItemHTML(m){
   const isLater = !isMust && isDue && mp.ids.indexOf(m.id)<0;
   const badge = isMust ? '<span class="pill" style="background:var(--badSoft);color:var(--bad)">必做</span> '
     : isLater ? '<span class="pill">等等</span> ' : '';
-  const meta = m.done ? `全部复习完成${m.finishedAt?'（'+m.finishedAt+'）':''}`
+  const meta = m.done ? `${m.mastered?'已直接学会':'全部复习完成'}${m.finishedAt?'（'+m.finishedAt+'）':''}`
     : od ? `<span style="color:var(--bad)">逾期 ${od} 天</span>　·　第 ${round}/${R} 遍`
     : `${isDue?'今天该翻':'下次 '+m.nextDate}　·　第 ${round}/${R} 遍`;
   return `<div class="item" data-misdetail="${m.id}">
@@ -3710,6 +3715,53 @@ function startMrevFiltered(){
   startMrev(ids);
 }
 function mrevById(id){ return S.mistakes.find(m=>m.id===id) || null; }
+/** 错题直接学会：归档，不再按间隔复习；今天的必做里会记成已完成 */
+function masterMistake(id, force){
+  const m = mrevById(id);
+  if(!m || m.done) return false;
+  if(!force && !confirm('直接学会会把这道错题归档，之后不再按间隔复习。确定？')) return false;
+  const t = today();
+  m.done = true;
+  m.mastered = true;
+  m.nextDate = '';
+  m.finishedAt = t;
+  m.history = (m.history||[]).slice(-30);
+  m.history.push({d:t, ok:true, level:'known'});
+  m.updatedAt = Date.now();
+  markPlanDone(id);
+  if(mrev){
+    const i = mrev.ids.indexOf(id);
+    if(i >= 0) mrev.ids.splice(i,1);
+  }
+  save();
+  return true;
+}
+function masterMistakeUI(id, fromMrev){
+  if(!masterMistake(id)) return;
+  if(fromMrev && mrev){
+    mrev.counts.ok = (mrev.counts.ok||0) + 1;
+    renderMrev();
+  }else{
+    closeSheet();
+    renderAll();
+  }
+  toast('已归档，不再按间隔复习');
+}
+function restoreMistake(id){
+  const m = mrevById(id);
+  if(!m || !m.done) return;
+  const t = today();
+  m.done = false;
+  m.mastered = false;
+  m.finishedAt = '';
+  m.stage = 0;
+  m.nextDate = addD(t, mistakeGaps()[0]);
+  m.history = (m.history||[]).slice(-30);
+  m.history.push({d:t, ok:true, level:'restore'});
+  m.updatedAt = Date.now();
+  save(); closeSheet(); renderAll();
+  toast('已恢复复习');
+}
 
 function renderMrev(){
   const box = $('#mrevStage');
@@ -3745,6 +3797,9 @@ function renderMrev(){
       <div style="display:flex;gap:8px;margin-top:10px">
         <button class="btn bad" style="height:38px;font-size:13.5px" data-act="mrevBad" data-id="${m.id}">还不会</button>
         <button class="btn ok" style="height:38px;font-size:13.5px" data-act="mrevOk" data-id="${m.id}">做完了</button>
+      </div>
+      <div style="text-align:right;margin-top:4px">
+        <button style="font-size:12px;color:var(--ok);padding:4px" data-act="mrevMaster" data-id="${m.id}">直接学会，不再复习</button>
       </div>
     </div>`;
   }).join('');
@@ -4016,14 +4071,14 @@ function openMistakeDetail(id){
     ${m.answer?`<div style="margin-top:10px;font-size:13.5px;color:var(--ink2);background:var(--bg);border-radius:12px;padding:12px;white-space:pre-wrap">${esc(m.answer)}</div>`:''}
     <div style="font-size:12.5px;color:var(--ink3);margin-top:12px;line-height:2">
       录入 ${m.created}　·　已翻 ${m.reviews||0} 遍 / 共 ${misRounds(m)} 遍${m.failCount?`　·　卡住 ${m.failCount} 次`:''}<br>
-      ${m.done ? `已完成${m.finishedAt?'（'+m.finishedAt+'）':''}`
+      ${m.done ? `${m.mastered?'已直接学会':'已完成'}${m.finishedAt?'（'+m.finishedAt+'）':''}`
         : `进度 ${m.stage}/${misRounds(m)}　·　下次 ${m.nextDate}${od?`　·　<span style="color:var(--bad)">逾期 ${od} 天</span>`:''}`}
     </div>
     <div style="margin-top:10px">
       ${(m.history||[]).slice().reverse().map(h=>{
         const lv = h.level || (h.ok ? 'ok' : 'bad');
-        const txt = lv==='ok' ? '做完了' : '还不会';
-        const col = lv==='ok' ? 'var(--ok)' : 'var(--bad)';
+        const txt = lv==='ok' ? '做完了' : lv==='known' ? '直接学会' : lv==='restore' ? '恢复复习' : '还不会';
+        const col = (lv==='ok' || lv==='known' || lv==='restore') ? 'var(--ok)' : 'var(--bad)';
         return `<div class="row" style="padding:7px 0">
           <span style="font-size:12.5px;color:var(--ink2)">${h.d}</span>
           <span style="font-size:12.5px;color:${col}">${txt}</span></div>`;
@@ -4034,6 +4089,8 @@ function openMistakeDetail(id){
       <button class="btn" data-act="editMistake" data-id="${m.id}" style="height:42px;font-size:13.5px">编辑</button>
       <button class="btn" data-act="delMistake" data-id="${m.id}" style="height:42px;font-size:13.5px;color:var(--bad)">删除</button>
     </div>
+    ${!m.done?`<button class="btn" data-act="masterMistake" data-id="${m.id}" style="width:100%;height:42px;margin-top:10px;color:var(--ok)">直接学会（归档）</button>`
+      : (m.mastered?`<button class="btn" data-act="restoreMistake" data-id="${m.id}" style="width:100%;height:42px;margin-top:10px;color:var(--brand)">恢复复习</button>`:'')}
     <button class="btn" data-act="favMistake" data-id="${m.id}" style="margin-top:10px;width:100%;height:42px">
       ${m.fav?'★ 取消收藏':'☆ 加入收藏夹'}</button>
     <button class="btn primary" data-act="closeSheet" style="margin-top:10px;width:100%;height:44px">关闭</button>`;
@@ -4480,22 +4537,19 @@ function openWhatsNew(){
   S.settings.seen250 = true;
   S.settings.seen260 = true;
   S.settings.seen270 = true;
+  S.settings.seen271 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.7.0 更新';
+  $('#sheetTitle').textContent = '温故 2.7.1 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.7.0 错题不再和单词抢预算</b><br>
-      · 错题有独立额度：平日 6 道、周末 20 道；单词复习仍是 40/80<br>
-      · 到期错题按「逾期 → 卡住次数 → 最后一轮」智能排序，分成「必做」和「等等」<br>
-      · 必做做完就算完成，不再要求清空所有到期错题；首页会显示还差几道<br>
-      · 积压自动减量：轻度时新词减半，重度时暂停新词，清完自动恢复<br>
-      · 不想减量可以点「本周不减」，7 天后再评估<br>
-      · 完成状态会写明「今日完成 · N 个词顺延」，不再用 ✓ 掩盖积压<br>
-      · 错题本会提示本周新增是否超过可消化速度<br><br>
+      <b style="color:var(--ink)">2.7.1 两个小开关</b><br>
+      · 错题可以直接学会：在错题详情或今日必做里点「直接学会」，直接归档，不再按间隔复习；详情里可以「恢复复习」<br>
+      · 今天可以不学新词：首页「今天要做的」右侧点「今天不学新词」，当天完成只看复习和必做错题；明天自动恢复，也可以手动恢复<br>
+      · 今天不学新词时，新词不会算进“还差 N 个新词”，完成状态只看单词复习和必做错题<br><br>
+      <b style="color:var(--ink)">2.7.0</b><br>
+      · 错题独立额度（平日 6 / 周末 20）、必做/等等智能排序、积压自动减量<br><br>
       <b style="color:var(--ink)">2.6.0</b><br>
-      · 平日 7 新词/40 复习，周六清账 0/80，周日加词 12/80<br><br>
-      <b style="color:var(--ink)">2.5.0</b><br>
-      · 单词和错题共用预算、返程模式、批量直接学会、IndexedDB 快照
+      · 平日 7 新词/40 复习，周六清账 0/80，周日加词 12/80
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -5155,6 +5209,9 @@ document.addEventListener('click', e=>{
       break;
     }
     case 'mrevOk': markMrev('ok', t.dataset.id); break;
+    case 'mrevMaster': masterMistakeUI(t.dataset.id, true); break;
+    case 'masterMistake': masterMistakeUI(t.dataset.id, false); break;
+    case 'restoreMistake': restoreMistake(t.dataset.id); break;
     case 'mrevBad': markMrev('bad', t.dataset.id); break;
     case 'examList': openExamList(); break;
     case 'derivedSum': openDerivedSummary(); break;
@@ -5268,6 +5325,18 @@ document.addEventListener('click', e=>{
     case 'undoKnown': undoKnownAll(); break;
     case 'undoClear': undoKnown = []; renderHome(); break;
     case 'freeze': doFreeze(); break;
+    case 'skipNew': {
+      S.meta.noNewDate = today();
+      save(); renderHome();
+      toast('今天不学新词，复习和错题照做');
+      break;
+    }
+    case 'resumeNew': {
+      S.meta.noNewDate = '';
+      save(); renderHome();
+      toast('已恢复学新词');
+      break;
+    }
     case 'catchupOn': {
       S.meta.catchup = {gap:lastStudyDay(), start:today()};
       S.meta.catchupSnooze = '';
@@ -5390,7 +5459,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen270) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen271) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
