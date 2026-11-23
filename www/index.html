@@ -85,6 +85,14 @@ input,textarea{font-family:inherit;font-size:inherit;color:inherit}
 .pill.ok{background:var(--okSoft);color:var(--ok)}
 .empty{text-align:center;color:var(--ink3);font-size:13px;padding:48px 20px}
 .empty b{display:block;font-size:15px;color:var(--ink2);margin-bottom:6px}
+.note{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;
+  margin-bottom:8px;box-shadow:var(--shadow)}
+.note .txt{font-size:14.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+.note .meta{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11.5px;color:var(--ink3)}
+.note .meta .del{margin-left:auto;margin-right:-4px;color:var(--bad);padding:6px 8px}
+.note-search{width:100%;height:38px;border-radius:10px;border:1px solid var(--line);
+  background:var(--card);padding:0 12px;font-size:13.5px;outline:none}
+.note-search:focus{border-color:var(--brand)}
 
 /* ---------- 学习 / 复习 卡 ---------- */
 .stage{flex:1;display:flex;flex-direction:column;padding:0 16px}
@@ -403,6 +411,22 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
     <div class="stage" id="mrevStage"></div>
   </section>
 
+  <!-- 随手记 -->
+  <section class="screen" id="scr-notes">
+    <div class="topbar">
+      <button class="iconbtn" data-act="notesBack" aria-label="返回">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5 8 12l7 7"/></svg>
+      </button>
+      <h1 style="font-size:16px">随手记</h1>
+      <div class="sp"></div>
+      <button class="btn" data-act="noteSummary" style="height:32px;padding:0 10px;font-size:12.5px;flex:0 0 auto">期末总结</button>
+      <button class="iconbtn" data-act="addNote" aria-label="记一条">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+    <div class="scroll" id="notesBody"></div>
+  </section>
+
   <nav id="tabbar">
     <button class="on" data-tab="home">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V21H3z"/></svg>
@@ -444,7 +468,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.7.2';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.8.0';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -463,8 +487,8 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:15, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, fsrsDR:0.9,
-    book:'', bookName:''
+    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, fsrsDR:0.9,
+    book:'', bookName:'', bookStart:25, bookShuffle:false
   },
   clockOffset: 0,
   items: [],
@@ -473,6 +497,7 @@ const DEFAULTS = {
   exam: null,
   learn: null,
   mistakes: [],
+  notes: [],
   spellHeat: {}
 };
 
@@ -540,6 +565,14 @@ function load(){
     d.items = Array.isArray(d.items)? d.items : [];
     d.days = d.days || {};
     d.mistakes = Array.isArray(d.mistakes) ? d.mistakes : [];
+    d.notes = (Array.isArray(d.notes) ? d.notes : []).filter(n=>n && typeof n==='object');
+    d.notes.forEach(n=>{
+      if(!n.id) n.id = 'nt'+Date.now()+Math.random().toString(36).slice(2,6);
+      n.text = n.text || '';
+      n.tag = n.tag || '';
+      n.created = n.created || today();
+      n.updatedAt = n.updatedAt || 0;
+    });
     d.learn = d.learn || null;
     if(!d.settings.lastBook) d.settings.lastBook = {};
     d.mistakes.forEach(m=>{
@@ -752,7 +785,7 @@ async function loadSnaps(){
 function backupPayload(){
   return JSON.stringify({
     v:1, saved:today(), items:S.items, days:S.days, settings:S.settings,
-    clockOffset:S.clockOffset, meta:S.meta, mistakes:S.mistakes, spellHeat:S.spellHeat, learn:S.learn
+    clockOffset:S.clockOffset, meta:S.meta, mistakes:S.mistakes, notes:S.notes||[], spellHeat:S.spellHeat, learn:S.learn
   });
 }
 function writeSnapshot(){
@@ -1025,6 +1058,14 @@ function bookStats(bk){
   const list = S.items.filter(i=>i.book===bk.id);
   return {inLib:list.length, learned:list.filter(i=>i.learned).length};
 }
+function bookStartIndex(bk){
+  const pct = Math.max(0, Math.min(80, Number(S.settings.bookStart)||0));
+  return Math.floor((bk.words||[]).length * pct / 100);
+}
+function shuffleArr(a){
+  for(let i=a.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; }
+  return a;
+}
 let bookTopLock = false;
 async function topUpFromBook(n){
   await loadBooks();
@@ -1034,8 +1075,10 @@ async function topUpFromBook(n){
   bookTopLock = true;
   try{
     const have = new Set(S.items.map(i=>normEn(i.en)));
+    let pool = bk.words.slice(bookStartIndex(bk));
+    if(S.settings.bookShuffle) pool = shuffleArr(pool.slice());
     const picked = [];
-    for(const w of bk.words){
+    for(const w of pool){
       if(picked.length>=n) break;
       const k = normEn(w);
       if(!k || have.has(k)) continue;
@@ -2649,6 +2692,9 @@ function renderHome(){
     wAns += Math.max(0, (Number(r.ans)||0) - (Number(r.free)||0));
     wMis += Number(r.mis)||0;
   }
+  const noteAll = S.notes||[];
+  const noteN = noteAll.length;
+  const noteWeek = noteAll.filter(n=>(n.created||'')>=ws).length;
 
   let html = `
     <div class="hero">
@@ -2756,6 +2802,17 @@ function renderHome(){
       <div style="color:var(--ink3)">›</div>
     </div>`;
 
+  html += `<div class="sect"><h3>随手记</h3><button data-act="addNote">记一条</button></div>
+    <div class="item" data-act="notes">
+      <div style="width:38px;height:38px;border-radius:12px;background:var(--brandSoft);color:var(--brand);
+        display:flex;align-items:center;justify-content:center;font-weight:700">记</div>
+      <div class="m">
+        <div class="en">${noteN?`${noteN} 条随手记`:'记下和题目无关的知识点'}</div>
+        <div class="zh">${noteN?`本周新增 ${noteWeek} 条 · 点开查看 / 期末总结`:'老师补充、易错点、跨章节关联'}</div>
+      </div>
+      <div style="color:var(--ink3)">›</div>
+    </div>`;
+
   if(S.clockOffset){
     html += `<div class="banner">当前是测试日期（${S.clockOffset>0?'+':''}${S.clockOffset} 天），不是真实今天
       <button data-act="clock0">恢复</button></div>`;
@@ -2849,6 +2906,34 @@ async function openBooks(){
   const cats = {};
   d.books.forEach(b=>{ (cats[b.category] = cats[b.category]||[]).push(b); });
   let html = `<p class="tip">选一本词书，学新词时会自动从里面取词；已学进度不会丢。词库来自 ECDICT（MIT）。</p>`;
+  const startPct = Math.max(0, Math.min(80, Number(S.settings.bookStart)||0));
+  const pb = cur ? bookById(cur) : null;
+  let preview = '选一本词书后可以预览下一批词汇。';
+  if(pb){
+    const start = bookStartIndex(pb);
+    const have = new Set(S.items.map(i=>normEn(i.en)));
+    if(S.settings.bookShuffle){
+      preview = `随机从「${pb.name}」剩余 ${Math.max(0,(pb.words||[]).length - start)} 个词中抽取`;
+    }else{
+      const sample = (pb.words||[]).slice(start).filter(w=>!have.has(normEn(w))).slice(0,4);
+      preview = sample.length ? `下一批会从：${sample.join(' / ')} …` : '这本词书已经取完了，换一本或调低跳过比例。';
+    }
+  }
+  html += `<div class="mini" style="margin:6px 0 12px;padding:12px 14px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between">
+      <div style="font-weight:650;font-size:13.5px">取词方式</div>
+      <div style="font-size:11px;color:var(--ink3)">词书按常用度排序，越靠前越简单</div>
+    </div>
+    <div class="chips" style="margin-top:6px">
+      ${[0,10,25,40,60,80].map(p=>`<button class="chip sm ${startPct===p?'on':''}" data-act="bookStart" data-p="${p}">跳过前 ${p}%</button>`).join('')}
+    </div>
+    <div class="chips" style="margin-top:4px">
+      <button class="chip sm ${!S.settings.bookShuffle?'on':''}" data-act="bookOrder" data-v="seq">按词书顺序</button>
+      <button class="chip sm ${S.settings.bookShuffle?'on':''}" data-act="bookOrder" data-v="random">随机取词</button>
+    </div>
+    <div style="font-size:11.5px;color:var(--ink3);margin-top:6px">${esc(preview)}</div>
+    <div style="font-size:11px;color:var(--ink3);margin-top:2px">只影响之后取的新词；词库里已有的待学词会先学完。</div>
+  </div>`;
   Object.keys(cats).forEach(cat=>{
     html += `<div class="sect" style="margin:14px 0 8px"><h3>${esc(cat)}</h3></div>`;
     cats[cat].forEach(b=>{
@@ -4168,6 +4253,131 @@ function saveMistake(id){
 }
 
 /* ============================================================
+   13.5 随手记
+   ============================================================ */
+const NOTE_TAGS = ['数学','物理','化学','英语','语文','地理','方法','易错','其他'];
+let noteQuery = '', noteTagFilter = '';
+function notesSorted(){
+  return (S.notes||[]).slice().sort((a,b)=>
+    (b.updatedAt||0)-(a.updatedAt||0) || String(b.created||'').localeCompare(String(a.created||'')));
+}
+function noteSearchInput(v){
+  noteQuery = String(v||'').trim().toLowerCase();
+  document.querySelectorAll('#notesBody .note').forEach(el=>{
+    el.style.display = (!noteQuery || (el.dataset.noteText||'').indexOf(noteQuery)>=0) ? '' : 'none';
+  });
+}
+function renderNotes(){
+  const all = notesSorted();
+  const week = all.filter(n=>(n.created||'') >= weekStart()).length;
+  const tags = [...new Set(all.map(n=>n.tag).filter(Boolean))];
+  if(noteTagFilter && !tags.includes(noteTagFilter)) noteTagFilter = '';
+  const q = noteQuery.toLowerCase();
+  const list = all.filter(n=> (!noteTagFilter || n.tag===noteTagFilter) &&
+    (!q || ((n.text||'')+' '+(n.tag||'')).toLowerCase().indexOf(q)>=0));
+  let html = `<div class="mini" style="margin:6px 0 12px;display:flex;align-items:center;gap:12px">
+    <div style="flex:1"><div style="font-weight:650;font-size:14px">${all.length} 条随手记</div>
+      <div style="font-size:12px;color:var(--ink3);margin-top:2px">本周新增 ${week} 条 · 期末总结可一键复制/导出</div></div>
+    <button class="btn primary" data-act="addNote" style="flex:0 0 auto;height:36px;padding:0 14px;font-size:13px">记一条</button>
+  </div>
+  <input class="note-search" id="noteSearch" placeholder="搜索笔记或标签" value="${esc(noteQuery)}" oninput="noteSearchInput(this.value)">
+  <div class="chips" style="margin:8px 0 12px">
+    <button class="chip sm ${noteTagFilter?'':'on'}" data-act="noteTagFilter" data-v="">全部</button>
+    ${tags.map(tg=>`<button class="chip sm ${noteTagFilter===tg?'on':''}" data-act="noteTagFilter" data-v="${esc(tg)}">${esc(tg)}</button>`).join('')}
+  </div>`;
+  if(!list.length){
+    html += `<div class="empty"><b>${all.length?'没有匹配的随手记':'还没有随手记'}</b>${all.length?'换个关键词或标签试试':'记下和题目无关的衍生知识点、老师补充、易错点'}</div>`;
+  }else{
+    html += list.map(n=>`
+      <div class="note" data-act="editNote" data-id="${n.id}" data-note-text="${esc(((n.text||'')+' '+(n.tag||'')).toLowerCase())}">
+        <div class="txt">${esc(n.text||'')}</div>
+        <div class="meta">${n.tag?`<span class="tag">${esc(n.tag)}</span>`:''}<span>${esc(n.created||'')}</span>
+          <button class="del" data-act="delNote" data-id="${n.id}" aria-label="删除这条随手记">删除</button></div>
+      </div>`).join('');
+  }
+  $('#notesBody').innerHTML = html;
+}
+function openNotes(){ renderNotes(); showScreen('notes'); }
+function openNoteEditor(id){
+  const n = id ? (S.notes||[]).find(x=>x.id===id) : null;
+  $('#sheetTitle').textContent = n ? '编辑随手记' : '记一条';
+  $('#sheetBody').innerHTML = `
+    <textarea id="noteText" placeholder="记下衍生知识点、易错点、老师补充……">${n?esc(n.text||''):''}</textarea>
+    <input id="noteTag" class="note-search" style="margin-top:10px" placeholder="标签：数学 / 方法 / 易错…" value="${n?esc(n.tag||''):''}">
+    <div class="chips" style="margin-top:8px">
+      ${NOTE_TAGS.map(tg=>`<button class="chip sm" data-act="noteTagFill" data-v="${tg}">${tg}</button>`).join('')}
+    </div>
+    <p class="tip">随手记不进错题复习，只用于期末回顾；和某道题直接相关的内容仍建议记在错题里。</p>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      ${n?`<button class="btn" data-act="delNote" data-id="${n.id}" style="color:var(--bad)">删除</button>`:''}
+      <button class="btn" data-act="closeSheet">取消</button>
+      <button class="btn primary" data-act="saveNote" data-id="${n?n.id:''}">保存</button>
+    </div>`;
+  openSheet();
+  setTimeout(()=>{ const el=$('#noteText'); if(el) el.focus(); }, 180);
+}
+function saveNote(id){
+  const text = String(($('#noteText')||{}).value||'').trim();
+  if(!text){ toast('写点什么再保存'); return; }
+  const tag = String(($('#noteTag')||{}).value||'').trim().slice(0,20);
+  const t = today();
+  let n = id ? (S.notes||[]).find(x=>x.id===id) : null;
+  if(n){
+    n.text = text; n.tag = tag; n.updatedAt = Date.now();
+  }else{
+    n = {id:'nt'+Date.now()+Math.random().toString(36).slice(2,6), text, tag, created:t, updatedAt:Date.now()};
+    S.notes = S.notes || [];
+    S.notes.unshift(n);
+  }
+  save(); closeSheet(); renderHome(); renderMe();
+  if($('#scr-notes').classList.contains('on')) renderNotes(); else openNotes();
+  toast('已保存');
+}
+function delNote(id){
+  const n = (S.notes||[]).find(x=>x.id===id);
+  if(!n) return;
+  if(!confirm('删除这条随手记？')) return;
+  S.notes = (S.notes||[]).filter(x=>x.id!==id);
+  save(); closeSheet(); renderHome(); renderMe();
+  if($('#scr-notes').classList.contains('on')) renderNotes(); else openNotes();
+  toast('已删除');
+}
+function noteSummaryText(){
+  const notes = notesSorted();
+  const groups = {};
+  notes.forEach(n=>{ const k=n.tag||'未分类'; (groups[k]=groups[k]||[]).push(n); });
+  const keys = Object.keys(groups).sort((a,b)=>
+    (groups[b].length-groups[a].length) || a.localeCompare(b));
+  const lines = [`温故 · 期末随手记总结`, `导出日期：${today()}　·　共 ${notes.length} 条`, ''];
+  const learned = S.items.filter(i=>i.learned && i.status!=='graduated').length;
+  const misN = (S.mistakes||[]).length;
+  lines.push(`学习概览：已学单词 ${learned} · 错题 ${misN} 道 · 随手记 ${notes.length} 条`, '');
+  if(!notes.length) lines.push('还没有随手记。');
+  keys.forEach(k=>{
+    lines.push(`【${k}】${groups[k].length} 条`);
+    groups[k].forEach((n,i)=>{
+      lines.push(`${i+1}. ${n.text}${n.created?`（${n.created}）`:''}`);
+    });
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+function openNoteSummary(){
+  const txt = noteSummaryText();
+  window.__noteSummaryText = txt;
+  const week = (S.notes||[]).filter(n=>(n.created||'')>=weekStart()).length;
+  $('#sheetTitle').textContent = '期末总结';
+  $('#sheetBody').innerHTML = `
+    <p class="tip">共 ${(S.notes||[]).length} 条 · 本周新增 ${week} 条。复制或导出后可用于期末回顾。</p>
+    <textarea id="noteSumBox" readonly style="min-height:280px;font-size:13px;line-height:1.7">${esc(txt)}</textarea>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn" data-act="copyNoteSummary">复制</button>
+      <button class="btn primary" data-act="exportNoteSummary">导出 .md</button>
+    </div>`;
+  openSheet();
+}
+
+/* ============================================================
    14. 我的
    ============================================================ */
 function heatCells(){
@@ -4188,6 +4398,7 @@ function renderMe(){
   const hard = hardItems().length;
   const err = S.items.filter(i=>i.errCount>0).sort((a,b)=>b.errCount-a.errCount).slice(0,5);
   const snaps = snapshots();
+  const noteN = (S.notes||[]).length;
 
   let cal = '';
   for(let i=27;i>=0;i--){
@@ -4280,10 +4491,17 @@ function renderMe(){
         </div></div>
     </div>
 
+    <div class="sect"><h3>随手记</h3><button data-act="noteSummary">期末总结 ›</button></div>
+    <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;margin-bottom:14px">
+      <div class="row" data-act="notes"><div><div class="l">全部随手记</div><div class="s">${noteN?noteN+' 条':'还没有，记下和题目无关的知识点'}</div></div><div style="color:var(--ink3)">›</div></div>
+      <div class="row" data-act="addNote"><div class="l">记一条</div><div style="color:var(--ink3)">›</div></div>
+    </div>
+
     <div class="sect"><h3>数据</h3><button data-act="monthReview">月度回顾 ›</button></div>
     <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;margin-bottom:14px">
       <div class="row" data-act="selfcheck"><div><div class="l">数据自检</div><div class="s">查重复词、异常日期、缺失记忆模型</div></div><div style="color:var(--ink3)">›</div></div>
       <div class="row" data-act="export"><div class="l">导出备份</div><div style="color:var(--ink3)">›</div></div>
+      <div class="row" data-act="exportCsv"><div><div class="l">导出学习记录 CSV</div><div class="s">每天的新词、复习、错题、补签</div></div><div style="color:var(--ink3)">›</div></div>
       <div class="row" data-act="import"><div class="l">导入备份</div><div style="color:var(--ink3)">›</div></div>
       <div class="row" data-act="sheet"><div class="l">导出默写表</div><div style="color:var(--ink3)">›</div></div>
       <div class="row" data-act="whatsnew"><div class="l">更新说明</div><div style="color:var(--ink3)">›</div></div>
@@ -4322,6 +4540,7 @@ function restoreSnap(i){
     S.clockOffset = o.clockOffset || 0;
     S.meta = Object.assign(S.meta, o.meta || {});
     S.mistakes = Array.isArray(o.mistakes) ? o.mistakes : [];
+    S.notes = Array.isArray(o.notes) ? o.notes : [];
     S.spellHeat = o.spellHeat || {};
     S.exam = null;
     save(); applyTheme(); closeSheet(); renderAll();
@@ -4546,19 +4765,20 @@ function openWhatsNew(){
   S.settings.seen270 = true;
   S.settings.seen271 = true;
   S.settings.seen272 = true;
+  S.settings.seen280 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.7.2 更新';
+  $('#sheetTitle').textContent = '温故 2.8.0 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.7.2 修正完成判定</b><br>
-      · 单题「立即翻」和筛选复习做完的错题，也会计入今天的必做，不再出现“明明做了还差几道”<br>
-      · 必做清完后再翻的「等等」批次，不再显示成“今日必做”<br>
-      · 今天不学新词时，隐藏未完成的续学卡，避免又点进去学新词<br>
-      · 单词今天没有到期时，首页不再显示“单词剩 40”<br><br>
-      <b style="color:var(--ink)">2.7.1</b><br>
-      · 错题直接学会（可恢复）、今天不学新词<br><br>
-      <b style="color:var(--ink)">2.7.0</b><br>
-      · 错题独立额度、必做/等等智能排序、积压自动减量
+      <b style="color:var(--ink)">2.8.0 随手记、取词方式和数据导出</b><br>
+      · 新增「随手记」：和题目无关的衍生知识点、老师补充、易错点，随手记一条；按标签筛选、搜索、编辑、删除<br>
+      · 期末总结：把随手记按标签汇总成一份总结，可复制或导出 Markdown<br>
+      · 词书取词可调：默认跳过前 25% 最常用的简单词，可改 0/10/25/40/60/80%；也可切换「按词书顺序 / 随机取词」<br>
+      · 选词书时能看到下一批会学哪些词，避免再取到 the/be/and 这类词<br>
+      · 我的 → 数据新增「导出学习记录 CSV」，导出每天的新词、复习、错题、补签<br>
+      · 导出备份、快照、合并导入现在都包含随手记；导入合并也会保留 free/mis 等日统计<br><br>
+      <b style="color:var(--ink)">2.7.2</b><br>
+      · 单题/筛选错题计入必做、等等批次标签、学完新词保留当日统计
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -4853,6 +5073,7 @@ async function doExport(){
   // 兼容 2.0 之前的 base64 图片：先尝试迁到 IndexedDB，失败也仍然留在 JSON 里
   try{ await migrateImgs(); }catch(e){}
   const out = JSON.parse(JSON.stringify(S)); out.exam = null; out.imgs = {};
+  out.notes = S.notes || [];
   let n = 0, missing = 0;
   const tasks = [];
   for(const m of S.mistakes){
@@ -4871,6 +5092,22 @@ async function doExport(){
   await Promise.all(tasks);
   download(`温故备份-${today()}.json`, JSON.stringify(out,null,2));
   toast('已导出，含 '+n+' 张图片'+(missing?`，${missing} 张读取失败`:''));
+}
+function csvCell(v){
+  const s = String(v==null?'':v);
+  return /[",\r\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+}
+function doExportCsv(){
+  const rows = [['日期','新词','计划复习','单词作答','正确','错题','自由复习','补签']];
+  Object.keys(S.days||{}).sort().forEach(d=>{
+    const x = S.days[d] || {};
+    const ans = Number(x.ans)||0, free = Number(x.free)||0;
+    rows.push([d, x.items||0, Math.max(0, ans-free), ans, x.right||0, x.mis||0, free, x.freeze?1:0]);
+  });
+  if(rows.length === 1){ toast('还没有学习记录'); return; }
+  const csv = '\ufeff' + rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
+  download(`温故学习记录-${today()}.csv`, csv, 'text/csv;charset=utf-8');
+  toast('已导出学习记录 CSV');
 }
 function doImport(){
   $('#sheetTitle').textContent='导入备份';
@@ -4949,9 +5186,29 @@ function mergeBackupObject(o){
       S.mistakes.push(m); byId.set(m.id, m); mAdd++;
     }
   });
+  S.notes = S.notes || [];
+  const byNote = new Map(S.notes.map(n=>[n.id, n]));
+  (o.notes||[]).forEach(n=>{
+    if(!n || !n.id || !n.text) return;
+    n.text = String(n.text); n.tag = n.tag||''; n.created = n.created||today();
+    n.updatedAt = n.updatedAt||0;
+    if(byNote.has(n.id)){
+      const cur = byNote.get(n.id);
+      if(n.updatedAt > (cur.updatedAt||0)) Object.assign(cur, n);
+    }else{
+      S.notes.push(n); byNote.set(n.id, n);
+    }
+  });
   Object.keys(o.days||{}).forEach(d=>{
     const a = S.days[d] || {ans:0,right:0,items:0}, b = o.days[d] || {};
-    S.days[d] = {ans:Math.max(a.ans||0,b.ans||0), right:Math.max(a.right||0,b.right||0), items:Math.max(a.items||0,b.items||0)};
+    const out = Object.assign({}, a, b);
+    out.ans = Math.max(a.ans||0,b.ans||0);
+    out.right = Math.max(a.right||0,b.right||0);
+    out.items = Math.max(a.items||0,b.items||0);
+    out.free = Math.max(a.free||0,b.free||0);
+    out.mis = Math.max(a.mis||0,b.mis||0);
+    if(a.freeze || b.freeze) out.freeze = true;
+    S.days[d] = out;
   });
   Object.keys(o.spellHeat||{}).forEach(k=>{
     S.spellHeat[k] = Math.max(S.spellHeat[k]||0, o.spellHeat[k]||0);
@@ -4994,6 +5251,7 @@ async function applyBackupObject(o){
   S.exam = null;
   S.items = (S.items||[]).filter(x=>x && typeof x.en==='string' && x.en.trim());
   S.mistakes = (S.mistakes||[]).filter(m=>m && m.id);
+  S.notes = (S.notes||[]).filter(n=>n && n.text);
   migrateItems(S.items);
   for(const k of Object.keys(imgs)){
     try{ await imgPut(k, imgs[k]); }catch(e){}
@@ -5043,6 +5301,7 @@ function renderAll(){
   renderWords();
   renderHard();
   renderMistakes();
+  renderNotes();
   renderMe();
 }
 
@@ -5191,6 +5450,28 @@ document.addEventListener('click', e=>{
     case 'theme': S.settings.theme = S.settings.theme==='dark'?'light':'dark'; applyTheme(); save(); renderMe(); break;
     case 'startLearn': startLearn(); break;
     case 'books': openBooks(); break;
+    case 'bookStart':
+      S.settings.bookStart = Math.max(0, Math.min(80, Number(t.dataset.p)||0));
+      save(); openBooks();
+      break;
+    case 'bookOrder':
+      S.settings.bookShuffle = t.dataset.v === 'random';
+      save(); openBooks();
+      break;
+    case 'notes': openNotes(); break;
+    case 'notesBack': goHome(); break;
+    case 'addNote': openNoteEditor(); break;
+    case 'editNote': openNoteEditor(t.dataset.id); break;
+    case 'saveNote': saveNote(t.dataset.id); break;
+    case 'delNote': delNote(t.dataset.id); break;
+    case 'noteTagFilter': noteTagFilter = t.dataset.v||''; renderNotes(); break;
+    case 'noteTagFill': { const inp = $('#noteTag'); if(inp) inp.value = t.dataset.v||''; break; }
+    case 'noteSummary': openNoteSummary(); break;
+    case 'copyNoteSummary': copyText(window.__noteSummaryText||''); break;
+    case 'exportNoteSummary':
+      download(`随手记总结-${today()}.md`, window.__noteSummaryText||'', 'text/markdown;charset=utf-8');
+      toast('已导出');
+      break;
     case 'pickBook': pickBook(t.dataset.id); break;
     case 'bookAdd': bookAdd(); break;
     case 'bookLearn': bookLearn(); break;
@@ -5396,6 +5677,7 @@ document.addEventListener('click', e=>{
     case 'doAdd': doAdd(); break;
     case 'closeSheet': closeSheet(); break;
     case 'export': doExport(); break;
+    case 'exportCsv': doExportCsv(); break;
     case 'import': doImport(); break;
     case 'doImport': runImport(); break;
     case 'mergeImport': mergeImport(); break;
@@ -5468,7 +5750,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen272) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen280) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
