@@ -482,7 +482,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.9.2';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.9.3';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -501,7 +501,7 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:15, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, seen290:false, seen291:false, seen292:false, fsrsDR:0.9,
+    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, seen290:false, seen291:false, seen292:false, seen293:false, fsrsDR:0.9,
     book:'', bookName:'', bookStart:25, bookShuffle:false
   },
   clockOffset: 0,
@@ -4572,6 +4572,7 @@ async function startSprint(){
   }
   if(!q.length){ toast('今天没有要认的词，到期复习也清完了'); return; }
   if(due.length > 180) toast(`到期 ${due.length} 个，今天先做前 180 个`);
+  closeSheet();
   sprintRun = {queue:q, idx:0, startedAt:Date.now(), total:q.length,
     doneNew:0, doneRev:0, known:0, unknown:0, revealed:false, lastKnown:true, token:0, finished:false};
   showScreen('sprint'); startSprintClock(); renderSprint();
@@ -5166,16 +5167,16 @@ function openWhatsNew(){
   S.settings.seen290 = true;
   S.settings.seen291 = true;
   S.settings.seen292 = true;
+  S.settings.seen293 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.9.2 更新';
+  $('#sheetTitle').textContent = '温故 2.9.3 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.9.2 首页冲刺卡片窄屏适配</b><br>
-      · 冲刺卡片改成「文字 + 开始按钮」，点卡片任意位置打开计划；窄屏不再挤<br>
-      · 最后 3 天：已接近目标就停新词、只复习不认识的；还差得多就继续按每天目标补<br><br>
+      <b style="color:var(--ink)">2.9.3 修正</b><br>
+      · 从冲刺计划页点「开始今天的认词」时，先关闭计划弹层再进入认词，不再挡在卡片上<br>
+      · 首页冲刺卡片窄屏适配；点卡片任意位置看计划<br><br>
       <b style="color:var(--ink)">2.9.0 期末冲刺：48 天，每天 20 分钟</b><br>
-      · 首页「期末冲刺」：D-48，只要求看到英文能想起中文，不考拼写<br>
-      · 默认 1920 词（约 40 个/天），可切 1440 / 2400；按剩余天数自动调每天新词<br>
+      · 只要求看到英文能想起中文，不考拼写；默认 1920 词（约 40/天）<br>
       · 高频优先；新词看一遍，第二天开始按 FSRS 复习；20 分钟软上限<br>
       · 冲刺期间默认暂停普通新词；导出备份、CSV 都包含冲刺数据
     </div>
@@ -6188,7 +6189,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen292) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen293) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
