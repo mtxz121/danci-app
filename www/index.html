@@ -427,6 +427,20 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
     <div class="scroll" id="notesBody"></div>
   </section>
 
+  <!-- 期末冲刺 -->
+  <section class="screen" id="scr-sprint">
+    <div class="topbar">
+      <button class="iconbtn" data-act="sprintBack" aria-label="返回">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M15 5 8 12l7 7"/></svg>
+      </button>
+      <h1 style="font-size:16px">期末冲刺</h1>
+      <div class="sp"></div>
+      <span id="sprintClock" style="font-size:12px;color:var(--ink3)">0:00 / 20:00</span>
+      <button class="iconbtn" data-act="sprintPlan" aria-label="冲刺计划">…</button>
+    </div>
+    <div class="scroll" id="sprintBody"></div>
+  </section>
+
   <nav id="tabbar">
     <button class="on" data-tab="home">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V21H3z"/></svg>
@@ -468,7 +482,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.8.0';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.9.0';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -487,7 +501,7 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:15, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, fsrsDR:0.9,
+    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, seen290:false, fsrsDR:0.9,
     book:'', bookName:'', bookStart:25, bookShuffle:false
   },
   clockOffset: 0,
@@ -498,6 +512,7 @@ const DEFAULTS = {
   learn: null,
   mistakes: [],
   notes: [],
+  sprint: {on:false, exam:'2027-01-11', goal:1920, pauseNormalNew:true, book:'gk', items:[], days:{}},
   spellHeat: {}
 };
 
@@ -572,6 +587,21 @@ function load(){
       n.tag = n.tag || '';
       n.created = n.created || today();
       n.updatedAt = n.updatedAt || 0;
+    });
+    if(!d.sprint || typeof d.sprint!=='object'){
+      d.sprint = {on:false, exam:'2027-01-11', goal:1920, pauseNormalNew:true, book:'gk', items:[], days:{}};
+    }
+    d.sprint.items = Array.isArray(d.sprint.items) ? d.sprint.items.filter(x=>x && x.en) : [];
+    d.sprint.days = (d.sprint.days && typeof d.sprint.days==='object') ? d.sprint.days : {};
+    d.sprint.exam = d.sprint.exam || '2027-01-11';
+    d.sprint.goal = Number(d.sprint.goal)||1920;
+    d.sprint.book = d.sprint.book || 'gk';
+    d.sprint.pauseNormalNew = d.sprint.pauseNormalNew !== false;
+    d.sprint.items.forEach(it=>{
+      it.seen = !!it.seen;
+      it.unknown = Number(it.unknown)||0;
+      if(it.fsrs && !it.fsrs.due) it.fsrs.due = it.nextDate || today();
+      if(it.fsrs && it.nextDate !== it.fsrs.due) it.nextDate = it.fsrs.due;
     });
     d.learn = d.learn || null;
     if(!d.settings.lastBook) d.settings.lastBook = {};
@@ -785,7 +815,7 @@ async function loadSnaps(){
 function backupPayload(){
   return JSON.stringify({
     v:1, saved:today(), items:S.items, days:S.days, settings:S.settings,
-    clockOffset:S.clockOffset, meta:S.meta, mistakes:S.mistakes, notes:S.notes||[], spellHeat:S.spellHeat, learn:S.learn
+    clockOffset:S.clockOffset, meta:S.meta, mistakes:S.mistakes, notes:S.notes||[], sprint:S.sprint||null, spellHeat:S.spellHeat, learn:S.learn
   });
 }
 function writeSnapshot(){
@@ -1102,6 +1132,101 @@ function dueItems(){
 }
 
 /* ============================================================
+   7.3 期末冲刺：只认词，不拼写；48 天，20 分钟/天，高频优先
+   ============================================================ */
+function sprintDaysLeft(){ return S.sprint ? Math.max(0, diffD(today(), S.sprint.exam)) : 0; }
+function sprintActive(){ return !!(S.sprint && S.sprint.on && sprintDaysLeft()>0); }
+function sprintDoneCount(){ return (S.sprint && S.sprint.items || []).filter(i=>i.seen).length; }
+function sprintTodayNew(){
+  const r = S.sprint && S.sprint.days && S.sprint.days[today()];
+  return Number(r && r.new) || 0;
+}
+function sprintNewTarget(){
+  if(!sprintActive()) return 0;
+  const remain = Math.max(0, (Number(S.sprint.goal)||1920) - sprintDoneCount());
+  const days = Math.max(1, sprintDaysLeft());
+  const daily = Math.min(60, Math.max(0, Math.ceil(remain/days)));
+  return Math.max(0, daily - sprintTodayNew());
+}
+function sprintDueList(){
+  const t = today();
+  return (S.sprint && S.sprint.items || []).filter(i=>i.seen && dueDate(i) && dueDate(i)<=t)
+    .sort((a,b)=> String(dueDate(a)).localeCompare(String(dueDate(b))) || (b.unknown||0)-(a.unknown||0));
+}
+function sprintUnknownCount(){ return (S.sprint && S.sprint.items || []).filter(i=>i.seen && (i.unknown||0)>0).length; }
+function sprintDayRec(){
+  const t = today();
+  S.sprint.days = S.sprint.days || {};
+  if(!S.sprint.days[t]) S.sprint.days[t] = {new:0, rev:0, known:0, unknown:0};
+  return S.sprint.days[t];
+}
+function sprintCapItem(it){
+  const cap = Math.max(1, sprintDaysLeft());
+  if(it.fsrs && it.fsrs.ivl > cap){
+    it.fsrs.ivl = cap;
+    it.fsrs.due = addD(today(), cap);
+    it.nextDate = it.fsrs.due;
+  }
+}
+function sprintZh(raw){
+  let s = String(raw||'').replace(/\r/g,' ').replace(/\[[^\]]*\]/g,' ');
+  s = s.replace(/\s+/g,' ').trim();
+  let parts = s.split(/[；;]/).map(x=>x.trim()).filter(Boolean);
+  if(parts.length <= 1) parts = s.split(/[,，]/).map(x=>x.trim()).filter(Boolean);
+  return (parts.slice(0,3).join('；') || '（待补释义）').slice(0,80);
+}
+async function sprintAddWords(n){
+  n = Math.max(0, Number(n)||0);
+  if(!n) return [];
+  await loadBooks();
+  const bk = bookById(S.sprint.book || 'gk');
+  if(!bk) return [];
+  const have = new Set();
+  (S.sprint.items||[]).forEach(i=>have.add(normEn(i.en)));
+  (S.items||[]).forEach(i=>{ if(i.learned) have.add(normEn(i.en)); });
+  const t = today();
+  const added = [];
+  for(const w of (bk.words||[])){
+    if(added.length >= n) break;
+    const k = normEn(w);
+    if(!k || have.has(k)) continue;
+    have.add(k);
+    const meta = (BOOKS.words && BOOKS.words[w]) || ['',''];
+    const zh = sprintZh(meta[1] || dictSensesOf(w).slice(0,2).join('；'));
+    const it = makeItem(w, zh, [bk.name]);
+    it.book = bk.id; it.bookName = bk.name;
+    it.learned = true; it.status = 'active';
+    it.sprint = true; it.seen = false; it.unknown = 0;
+    it.fsrs = {d:fsrsD0(3), s:fsrsS0(3), reps:0, lapses:0, state:1, last:Date.now(), due:t, ivl:1, lastGrade:3};
+    it.nextDate = t;
+    S.sprint.items.push(it);
+    added.push(it);
+  }
+  if(added.length) save();
+  return added;
+}
+function sprintMarkNew(it){
+  it.seen = true;
+  it.fsrs.last = Date.now();
+  it.fsrs.state = 1;
+  it.fsrs.ivl = 1;
+  it.fsrs.due = addD(today(), 1);
+  it.nextDate = it.fsrs.due;
+  sprintDayRec().new++;
+  save();
+}
+function sprintGradeItem(it, known){
+  fsrsApply(it, known ? 3 : 1);
+  sprintCapItem(it);
+  it.seen = true;
+  if(!known) it.unknown = (it.unknown||0) + 1;
+  const d = sprintDayRec();
+  d.rev++;
+  if(known) d.known++; else d.unknown++;
+  save();
+}
+
+/* ============================================================
    7.4 周节奏：单词复习和错题各有自己的额度
    周一–周五 7 新词 / 40 单词复习 / 6 道必做错题
    周六 0 新词 / 80 单词复习 / 20 道错题（清账）
@@ -1118,6 +1243,7 @@ function isWeekend(){ return dayKind()!=='weekday'; }
 /** 今天的新词目标：平日 7，周六 0，周日 12；今天不学新词时为 0；积压时自动减半或暂停 */
 function dayNewTarget(lvl){
   if(S.meta.noNewDate === today()) return 0;
+  if(sprintActive() && S.sprint.pauseNormalNew) return 0;
   const base = todayPlan().newWords;
   if(!base) return 0;
   const level = lvl === undefined ? throttleLevel() : lvl;
@@ -1491,6 +1617,7 @@ const PHASE_NAME = {meet:'认识新词', recall:'回想一下', quiz:'选出释�
 
 async function startLearn(){
   if(catchupActive()){ toast('返程模式先清到期，清完自动恢复新词'); return; }
+  if(sprintActive() && S.sprint.pauseNormalNew){ toast('期末冲刺期间普通新词暂停，去「期末冲刺」认词'); return; }
   if(S.meta.noNewDate === today()){ toast('今天设了不学新词，想学先点「恢复」'); return; }
   if(S.learn && Array.isArray(S.learn.ids) && S.learn.ids.length &&
      !confirm('还有一次未完成的学习，开始新的会覆盖它，继续？')) return;
@@ -2695,8 +2822,41 @@ function renderHome(){
   const noteAll = S.notes||[];
   const noteN = noteAll.length;
   const noteWeek = noteAll.filter(n=>(n.created||'')>=ws).length;
+  const sLeft = sprintDaysLeft();
+  const sDone = sprintDoneCount();
+  const sGoal = Number(S.sprint.goal)||1920;
+  const sTarget = sprintNewTarget();
+  const sDue = sprintDueList().length;
+  let sprintCard = '';
+  if(S.sprint.on && sLeft>0){
+    sprintCard = `<div class="mini" style="border-color:var(--warn);margin:6px 0 10px;padding:12px 14px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="flex:1">
+          <div style="font-weight:700;font-size:14px">期末冲刺 D-${sLeft}</div>
+          <div style="font-size:12px;color:var(--ink3);margin-top:2px">已认 ${sDone}/${sGoal} · 今天 ${sTarget} 新 + ${sDue} 复习</div>
+        </div>
+        <button class="btn primary" data-act="startSprint" style="flex:0 0 auto;height:38px;padding:0 14px;font-size:13px">开始认词</button>
+        <button class="iconbtn" data-act="sprintPlan" aria-label="冲刺计划">…</button>
+      </div>
+    </div>`;
+  }else if(!S.sprint.on && sLeft>0){
+    sprintCard = `<div class="mini" style="border-color:var(--warn);margin:6px 0 10px;padding:12px 14px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="flex:1"><div style="font-weight:700;font-size:14px">还有 ${sLeft} 天期末</div>
+          <div style="font-size:12px;color:var(--ink3);margin-top:2px">20 分钟/天 · 高频词认 1920 个 · 只要求认识</div></div>
+        <button class="btn primary" data-act="sprintOn" style="flex:0 0 auto;height:38px;padding:0 14px;font-size:13px">开启冲刺</button>
+      </div>
+    </div>`;
+  }else if(S.sprint.on && sLeft<=0){
+    sprintCard = `<div class="mini" style="margin:6px 0 10px;padding:12px 14px">
+      <div style="display:flex;align-items:center;gap:10px"><div style="flex:1"><div style="font-weight:650;font-size:13.5px">期末冲刺已结束</div>
+        <div style="font-size:12px;color:var(--ink3);margin-top:2px">已认 ${sDone} 词</div></div>
+        <button class="btn" data-act="sprintPlan" style="flex:0 0 auto;height:34px;padding:0 12px;font-size:12.5px">回顾</button></div>
+    </div>`;
+  }
 
   let html = `
+    ${sprintCard}
     <div class="hero">
       <div class="d">${t}　${['周日','周一','周二','周三','周四','周五','周六'][parseD(t).getDay()]}　·　${plan.name}</div>
       <div class="big">${doneToday?'✓':(due.length || mustLeft || newLeft || 0)}</div>
@@ -4378,6 +4538,234 @@ function openNoteSummary(){
 }
 
 /* ============================================================
+   13.6 期末冲刺：20 分钟认词
+   ============================================================ */
+let sprintRun = null, sprintTimer = null;
+function sprintClockText(sec){
+  const m = Math.floor(sec/60), s = sec%60;
+  return m+':'+String(s).padStart(2,'0')+' / 20:00';
+}
+function startSprintClock(){
+  stopSprintClock();
+  sprintTimer = setInterval(()=>{
+    if(!sprintRun){ stopSprintClock(); return; }
+    const sec = Math.floor((Date.now()-sprintRun.startedAt)/1000);
+    const el = $('#sprintClock');
+    if(el){ el.textContent = sprintClockText(sec); el.style.color = sec>=1200?'var(--bad)':'var(--ink3)'; }
+  }, 1000);
+}
+function stopSprintClock(){ if(sprintTimer){ clearInterval(sprintTimer); sprintTimer=null; } }
+async function startSprint(){
+  if(!S.sprint || !S.sprint.on){ toast('先开启期末冲刺'); openSprintPlan(); return; }
+  if(sprintDaysLeft() <= 0){ toast('考试已经到啦，冲刺结束'); return; }
+  const target = sprintNewTarget();
+  const unseen = (S.sprint.items||[]).filter(i=>!i.seen);
+  const toAdd = Math.max(0, target - unseen.length);
+  if(toAdd) await sprintAddWords(toAdd);
+  const due = sprintDueList();
+  const reviews = due.slice(0, 180);
+  const newCards = target>0 ? (S.sprint.items||[]).filter(i=>!i.seen).slice(0, target) : [];
+  const q = [];
+  let ri=0, ni=0;
+  while(ri<reviews.length || ni<newCards.length){
+    for(let k=0;k<2 && ri<reviews.length;k++) q.push({it:reviews[ri++], isNew:false});
+    if(ni<newCards.length) q.push({it:newCards[ni++], isNew:true});
+  }
+  if(!q.length){ toast('今天没有要认的词，到期复习也清完了'); return; }
+  if(due.length > 180) toast(`到期 ${due.length} 个，今天先做前 180 个`);
+  sprintRun = {queue:q, idx:0, startedAt:Date.now(), total:q.length,
+    doneNew:0, doneRev:0, known:0, unknown:0, revealed:false, lastKnown:true, token:0, finished:false};
+  showScreen('sprint'); startSprintClock(); renderSprint();
+}
+function renderSprint(){
+  if(!sprintRun){ goHome(); return; }
+  if(sprintRun.idx >= sprintRun.queue.length) sprintRun.finished = true;
+  if(sprintRun.finished) stopSprintClock();
+  const sec = Math.floor((Date.now()-sprintRun.startedAt)/1000);
+  const over = sec >= 1200;
+  const done = sprintRun.doneNew + sprintRun.doneRev;
+  const pct = Math.round(done / Math.max(1,sprintRun.total) * 100);
+  let html = `<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink3);margin:2px 0 6px">
+      <span>已认 ${sprintRun.doneNew} 新 · 复习 ${sprintRun.doneRev}</span>
+      <span style="color:${over?'var(--bad)':'var(--ink3)'}">${over?'已到 20 分钟':'20 分钟软上限'}</span>
+    </div>
+    <div class="pbar"><i style="width:${pct}%"></i></div>`;
+  if(sprintRun.finished){
+    const dueLeft = sprintDueList().length;
+    const reached = sprintDoneCount() >= (Number(S.sprint.goal)||1920);
+    html += `<div class="bigcard" style="justify-content:center">
+      <div style="font-size:44px">${reached?'🏁':'✓'}</div>
+      <div class="phon" style="font-size:16px;color:var(--ink);margin-top:8px">${over?'20 分钟到了':'今天这轮完成'}</div>
+      <div class="hintline" style="margin-top:12px">新词 ${sprintRun.doneNew} · 复习 ${sprintRun.doneRev}　·　认识 ${sprintRun.known} / 不认识 ${sprintRun.unknown}</div>
+      <div class="hintline">已认 ${sprintDoneCount()}/${Number(S.sprint.goal)||1920} · 到期还剩 ${dueLeft} 个${reached?'　·　目标达成':''}</div>
+    </div>
+    <div class="actions">
+      <button class="btn" data-act="sprintMore">再认 10 个</button>
+      <button class="btn primary" data-act="sprintHome">收工</button>
+    </div>`;
+    $('#sprintBody').innerHTML = html;
+    return;
+  }
+  const q = sprintRun.queue[sprintRun.idx];
+  const it = q.it;
+  const wordCls = String(it.en||'').length > 13 ? ' small' : '';
+  if(q.isNew){
+    html += `<div class="bigcard">
+      <div class="word${wordCls}">${esc(it.en)}</div>
+      ${phonOf(it.en)?`<div class="phon">/${esc(phonOf(it.en))}/</div>`:''}
+      <div class="senses"><div class="sense">${esc(it.zh||'')}</div></div>
+      <div class="hintline">先认个脸，明天开始按 FSRS 复习</div>
+    </div>
+    <div class="actions"><button class="btn primary" data-act="sprintNewDone">认识了，下一个</button></div>`;
+  }else{
+    html += `<div class="bigcard">
+      <div class="word${wordCls}">${esc(it.en)}</div>
+      ${phonOf(it.en)?`<div class="phon">/${esc(phonOf(it.en))}/</div>`:''}
+      ${sprintRun.revealed?`<div class="senses"><div class="sense">${esc(it.zh||'')}</div></div>
+        <div class="hintline" style="color:${sprintRun.lastKnown?'var(--ok)':'var(--bad)'}">${sprintRun.lastKnown?'认识':'不认识'} · 稍后再见</div>`
+      :`<div class="hintline">先想中文，再点下面</div>`}
+    </div>
+    <div class="actions">
+      ${sprintRun.revealed?`<button class="btn" data-act="sprintNext">下一个</button>`
+      :`<button class="btn bad" data-act="sprintDont">不认识</button>
+        <button class="btn ok" data-act="sprintKnow">认识</button>`}
+    </div>`;
+  }
+  $('#sprintBody').innerHTML = html;
+}
+function sprintNewDone(){
+  if(!sprintRun || sprintRun.finished) return;
+  const q = sprintRun.queue[sprintRun.idx];
+  if(!q || !q.isNew) return;
+  sprintMarkNew(q.it);
+  sprintRun.doneNew++;
+  sprintRun.idx++;
+  sprintRun.token++;
+  renderSprint();
+}
+function sprintGrade(known){
+  if(!sprintRun || sprintRun.finished || sprintRun.revealed) return;
+  const q = sprintRun.queue[sprintRun.idx];
+  if(!q || q.isNew) return;
+  sprintGradeItem(q.it, known);
+  sprintRun.doneRev++;
+  if(known) sprintRun.known++; else sprintRun.unknown++;
+  sprintRun.revealed = true;
+  sprintRun.lastKnown = !!known;
+  renderSprint();
+  const token = ++sprintRun.token;
+  setTimeout(()=>{
+    if(sprintRun && sprintRun.token===token && !sprintRun.finished) sprintNext();
+  }, known ? 700 : 1400);
+}
+function sprintNext(){
+  if(!sprintRun) return;
+  sprintRun.token++;
+  sprintRun.idx++;
+  sprintRun.revealed = false;
+  renderSprint();
+}
+function sprintExit(){
+  stopSprintClock();
+  sprintRun = null;
+  goHome();
+}
+function sprintBack(){
+  if(sprintRun && !sprintRun.finished && (sprintRun.doneNew+sprintRun.doneRev)>0 &&
+     !confirm('退出冲刺？已经认过的词会保留。')) return;
+  sprintExit();
+}
+async function sprintMore(){
+  if(!sprintRun) return;
+  await sprintAddWords(10);
+  const extra = (S.sprint.items||[]).filter(i=>!i.seen).slice(0,10).map(it=>({it, isNew:true}));
+  if(!extra.length){ toast('词书已经取完了'); return; }
+  sprintRun.queue.push(...extra);
+  sprintRun.total = sprintRun.queue.length;
+  sprintRun.finished = false;
+  sprintRun.revealed = false;
+  sprintRun.startedAt = Date.now();
+  startSprintClock();
+  renderSprint();
+}
+function openSprintPlan(){
+  if(!S.sprint) return;
+  const done = sprintDoneCount(), goal = Number(S.sprint.goal)||1920, left = sprintDaysLeft();
+  const target = sprintNewTarget(), due = sprintDueList().length, weak = sprintUnknownCount();
+  let rows = '';
+  let remain = Math.max(0, goal-done), cum = done;
+  for(let w=0; w<7 && left>0; w++){
+    const d0 = w*7;
+    if(d0 >= left) break;
+    const days = Math.min(7, left-d0);
+    const per = Math.ceil(remain / Math.max(1, left-d0));
+    const add = Math.min(remain, per*days);
+    cum += add; remain -= add;
+    const s = addD(today(), d0).slice(5);
+    const e = addD(today(), Math.min(d0+days-1, left-1)).slice(5);
+    rows += `<div class="row" style="padding:9px 0">
+      <div><div class="l">第 ${w+1} 周　${s} ~ ${e}</div><div class="s">每天约 ${per} 个新词</div></div>
+      <div style="font-size:12px;color:var(--ink3);flex:0 0 auto">累计 ${Math.min(goal,cum)}</div>
+    </div>`;
+  }
+  if(!rows) rows = `<p class="tip">${left>0?'目标已达成，接下来只复习不认识的词。':'考试已经到啦。'}</p>`;
+  $('#sheetTitle').textContent = '期末冲刺计划';
+  $('#sheetBody').innerHTML = `
+    <div class="hero" style="margin:0 0 12px;padding:18px 18px">
+      <div class="d">距离期末还有 ${left} 天 · 只要求认识</div>
+      <div class="big" style="font-size:34px">${done}<span style="font-size:16px;opacity:.8"> / ${goal} 词</span></div>
+      <div class="sub">今天应认 ${target} 个新词 · 到期复习 ${due} 个 · 不认识 ${weak} 个</div>
+    </div>
+    <div class="mini" style="margin-bottom:12px;padding:12px 14px">
+      <div style="font-weight:650;font-size:13.5px">每天怎么学</div>
+      <div style="font-size:12px;color:var(--ink2);margin-top:4px;line-height:1.7">
+        先认新词（看英文 + 中文，不默写），第二天开始按 FSRS 复习；复习时先想中文，再点「认识 / 不认识」。<br>
+        20 分钟是软上限；时间到就收工，没做完的顺延。
+      </div>
+      <div class="chips" style="margin-top:8px">
+        ${[1440,1920,2400].map(g=>`<button class="chip sm ${goal===g?'on':''}" data-act="sprintGoal" data-g="${g}">${g} 词（约 ${Math.ceil(g/48)}/天）</button>`).join('')}
+      </div>
+      <button class="chip sm ${S.sprint.pauseNormalNew?'on':''}" data-act="sprintPause" style="margin-top:4px">
+        冲刺期间暂停普通新词${S.sprint.pauseNormalNew?'（已开）':'（已关）'}
+      </button>
+    </div>
+    <div class="mini" style="margin-bottom:12px;padding:12px 14px">
+      <div style="font-weight:650;font-size:13.5px">按周计划</div>
+      ${rows}
+      <div style="font-size:11.5px;color:var(--warn);margin-top:6px">最后 3 天建议停止新词，只复习「不认识」和到期词。</div>
+    </div>
+    <div style="display:flex;gap:10px">
+      ${S.sprint.on && left>0?`<button class="btn primary" data-act="startSprint">开始今天的认词</button>
+        <button class="btn" data-act="sprintOff" style="color:var(--bad)">关闭冲刺</button>`
+      : S.sprint.on?`<button class="btn" data-act="sprintOff" style="color:var(--bad)">关闭冲刺</button>`
+      : left>0?`<button class="btn primary" data-act="sprintOn">开启 48 天冲刺</button>`:''}
+    </div>`;
+  openSheet();
+}
+function sprintOn(){
+  if(sprintDaysLeft() <= 0){ toast('考试已经到啦，不需要再开启冲刺'); return; }
+  S.sprint.on = true;
+  S.sprint.pauseNormalNew = true;
+  save(); renderHome(); renderMe(); openSprintPlan();
+  toast('冲刺已开启：每天先认 20 分钟');
+}
+function sprintOff(){
+  if(!confirm('关闭期末冲刺？已认的词会保留，随时可以再开。')) return;
+  S.sprint.on = false;
+  save(); closeSheet(); renderHome(); renderMe();
+  if($('#scr-sprint').classList.contains('on')) sprintExit();
+  toast('已关闭冲刺，普通新词恢复');
+}
+function sprintSetGoal(g){
+  S.sprint.goal = Number(g)||1920;
+  save(); renderHome(); openSprintPlan();
+}
+function sprintTogglePause(){
+  S.sprint.pauseNormalNew = !S.sprint.pauseNormalNew;
+  save(); renderHome(); openSprintPlan();
+}
+
+/* ============================================================
    14. 我的
    ============================================================ */
 function heatCells(){
@@ -4399,6 +4787,9 @@ function renderMe(){
   const err = S.items.filter(i=>i.errCount>0).sort((a,b)=>b.errCount-a.errCount).slice(0,5);
   const snaps = snapshots();
   const noteN = (S.notes||[]).length;
+  const spDone = sprintDoneCount();
+  const spLeft = sprintDaysLeft();
+  const spGoal = Number(S.sprint.goal)||1920;
 
   let cal = '';
   for(let i=27;i>=0;i--){
@@ -4491,6 +4882,12 @@ function renderMe(){
         </div></div>
     </div>
 
+    <div class="sect"><h3>期末冲刺</h3><button data-act="sprintPlan">计划 ›</button></div>
+    <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;margin-bottom:14px">
+      <div class="row" data-act="sprintPlan"><div><div class="l">${S.sprint.on?'冲刺进行中':'开启 48 天冲刺'}</div><div class="s">${spLeft>0?`D-${spLeft} · 已认 ${spDone}/${spGoal}`:'已结束'}</div></div><div style="color:var(--ink3)">›</div></div>
+      ${S.sprint.on && spLeft>0?`<div class="row" data-act="startSprint"><div class="l">开始今天的认词</div><div style="color:var(--ink3)">›</div></div>`:''}
+    </div>
+
     <div class="sect"><h3>随手记</h3><button data-act="noteSummary">期末总结 ›</button></div>
     <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;margin-bottom:14px">
       <div class="row" data-act="notes"><div><div class="l">全部随手记</div><div class="s">${noteN?noteN+' 条':'还没有，记下和题目无关的知识点'}</div></div><div style="color:var(--ink3)">›</div></div>
@@ -4541,6 +4938,7 @@ function restoreSnap(i){
     S.meta = Object.assign(S.meta, o.meta || {});
     S.mistakes = Array.isArray(o.mistakes) ? o.mistakes : [];
     S.notes = Array.isArray(o.notes) ? o.notes : [];
+    S.sprint = (o.sprint && typeof o.sprint==='object') ? o.sprint : S.sprint;
     S.spellHeat = o.spellHeat || {};
     S.exam = null;
     save(); applyTheme(); closeSheet(); renderAll();
@@ -4766,19 +5164,20 @@ function openWhatsNew(){
   S.settings.seen271 = true;
   S.settings.seen272 = true;
   S.settings.seen280 = true;
+  S.settings.seen290 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.8.0 更新';
+  $('#sheetTitle').textContent = '温故 2.9.0 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.8.0 随手记、取词方式和数据导出</b><br>
-      · 新增「随手记」：和题目无关的衍生知识点、老师补充、易错点，随手记一条；按标签筛选、搜索、编辑、删除<br>
-      · 期末总结：把随手记按标签汇总成一份总结，可复制或导出 Markdown<br>
-      · 词书取词可调：默认跳过前 25% 最常用的简单词，可改 0/10/25/40/60/80%；也可切换「按词书顺序 / 随机取词」<br>
-      · 选词书时能看到下一批会学哪些词，避免再取到 the/be/and 这类词<br>
-      · 我的 → 数据新增「导出学习记录 CSV」，导出每天的新词、复习、错题、补签<br>
-      · 导出备份、快照、合并导入现在都包含随手记；导入合并也会保留 free/mis 等日统计<br><br>
-      <b style="color:var(--ink)">2.7.2</b><br>
-      · 单题/筛选错题计入必做、等等批次标签、学完新词保留当日统计
+      <b style="color:var(--ink)">2.9.0 期末冲刺：48 天，每天 20 分钟</b><br>
+      · 首页新增「期末冲刺」：D-48，只要求看到英文能想起中文，不考拼写<br>
+      · 默认目标 1920 词（约 40 个/天），可切 1440 / 2400；按剩余天数自动调每天新词<br>
+      · 高频优先：从高考词汇最常用的词开始；新词看一遍，第二天开始按 FSRS 复习<br>
+      · 复习先想中文，再点「认识 / 不认识」；20 分钟是软上限，时间到可收工<br>
+      · 冲刺期间默认暂停普通新词，避免两套计划打架；可在计划页关闭<br>
+      · 计划页按周显示进度；导出备份、CSV 都包含冲刺数据<br><br>
+      <b style="color:var(--ink)">2.8.0</b><br>
+      · 随手记与期末总结、词书取词起点/随机、学习记录 CSV
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -5098,11 +5497,12 @@ function csvCell(v){
   return /[",\r\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
 }
 function doExportCsv(){
-  const rows = [['日期','新词','计划复习','单词作答','正确','错题','自由复习','补签']];
+  const rows = [['日期','新词','计划复习','单词作答','正确','错题','自由复习','补签','冲刺新词','冲刺复习']];
   Object.keys(S.days||{}).sort().forEach(d=>{
     const x = S.days[d] || {};
     const ans = Number(x.ans)||0, free = Number(x.free)||0;
-    rows.push([d, x.items||0, Math.max(0, ans-free), ans, x.right||0, x.mis||0, free, x.freeze?1:0]);
+    const sp = (S.sprint && S.sprint.days && S.sprint.days[d]) || {};
+    rows.push([d, x.items||0, Math.max(0, ans-free), ans, x.right||0, x.mis||0, free, x.freeze?1:0, sp.new||0, sp.rev||0]);
   });
   if(rows.length === 1){ toast('还没有学习记录'); return; }
   const csv = '\ufeff' + rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
@@ -5199,6 +5599,31 @@ function mergeBackupObject(o){
       S.notes.push(n); byNote.set(n.id, n);
     }
   });
+  if(o.sprint && typeof o.sprint==='object'){
+    const cur = S.sprint || {};
+    cur.on = !!(o.sprint.on || cur.on);
+    cur.exam = o.sprint.exam || cur.exam || '2027-01-11';
+    cur.goal = Number(o.sprint.goal)||Number(cur.goal)||1920;
+    cur.pauseNormalNew = o.sprint.pauseNormalNew !== undefined ? !!o.sprint.pauseNormalNew : (cur.pauseNormalNew !== false);
+    cur.items = Array.isArray(cur.items) ? cur.items : [];
+    cur.days = cur.days || {};
+    const byEn = new Map(cur.items.map(i=>[i.en, i]));
+    (o.sprint.items||[]).forEach(i=>{
+      if(!i || !i.en) return;
+      if(byEn.has(i.en)){
+        const c = byEn.get(i.en);
+        if((i.fsrs && i.fsrs.last || 0) > (c.fsrs && c.fsrs.last || 0)) Object.assign(c, i);
+      }else{
+        cur.items.push(i); byEn.set(i.en, i);
+      }
+    });
+    Object.keys(o.sprint.days||{}).forEach(d=>{
+      const a = cur.days[d]||{}, b = o.sprint.days[d]||{};
+      cur.days[d] = {new:Math.max(a.new||0,b.new||0), rev:Math.max(a.rev||0,b.rev||0),
+        known:Math.max(a.known||0,b.known||0), unknown:Math.max(a.unknown||0,b.unknown||0)};
+    });
+    S.sprint = cur;
+  }
   Object.keys(o.days||{}).forEach(d=>{
     const a = S.days[d] || {ans:0,right:0,items:0}, b = o.days[d] || {};
     const out = Object.assign({}, a, b);
@@ -5287,8 +5712,8 @@ function showScreen(name){
   const el = $('#scr-'+name);
   if(el) el.classList.add('on');
   document.querySelectorAll('#tabbar button').forEach(b=>b.classList.toggle('on', b.dataset.tab===name));
-  $('#tabbar').style.display = (name==='learn'||name==='review'||name==='mrev') ? 'none' : 'flex';
-  if(name!=='learn'&&name!=='review'&&name!=='mrev'){ $('#tabbar').style.display='flex'; }
+  const tabbarHidden = (name==='learn'||name==='review'||name==='mrev'||name==='sprint');
+  $('#tabbar').style.display = tabbarHidden ? 'none' : 'flex';
   // 换页时收起提示，避免 toast 一直挂在新页面上
   const tt = $('#toast');
   if(tt) tt.classList.remove('on');
@@ -5459,6 +5884,19 @@ document.addEventListener('click', e=>{
       save(); openBooks();
       break;
     case 'notes': openNotes(); break;
+    case 'sprintOn': sprintOn(); break;
+    case 'sprintOff': sprintOff(); break;
+    case 'startSprint': startSprint(); break;
+    case 'sprintBack': sprintBack(); break;
+    case 'sprintNewDone': sprintNewDone(); break;
+    case 'sprintKnow': sprintGrade(true); break;
+    case 'sprintDont': sprintGrade(false); break;
+    case 'sprintNext': sprintNext(); break;
+    case 'sprintHome': sprintExit(); break;
+    case 'sprintMore': sprintMore(); break;
+    case 'sprintPlan': openSprintPlan(); break;
+    case 'sprintGoal': sprintSetGoal(t.dataset.g); break;
+    case 'sprintPause': sprintTogglePause(); break;
     case 'notesBack': goHome(); break;
     case 'addNote': openNoteEditor(); break;
     case 'editNote': openNoteEditor(t.dataset.id); break;
@@ -5750,7 +6188,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen280) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen290) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
