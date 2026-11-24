@@ -482,7 +482,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.9.3';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.9.4';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -501,7 +501,7 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:15, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, seen290:false, seen291:false, seen292:false, seen293:false, fsrsDR:0.9,
+    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, seen290:false, seen291:false, seen292:false, seen293:false, seen294:false, fsrsDR:0.9,
     book:'', bookName:'', bookStart:25, bookShuffle:false
   },
   clockOffset: 0,
@@ -599,6 +599,7 @@ function load(){
     d.sprint.pauseNormalNew = d.sprint.pauseNormalNew !== false;
     d.sprint.items.forEach(it=>{
       it.seen = !!it.seen;
+      it.skipped = !!it.skipped;
       it.unknown = Number(it.unknown)||0;
       if(it.fsrs && !it.fsrs.due) it.fsrs.due = it.nextDate || today();
       if(it.fsrs && it.nextDate !== it.fsrs.due) it.nextDate = it.fsrs.due;
@@ -1136,7 +1137,7 @@ function dueItems(){
    ============================================================ */
 function sprintDaysLeft(){ return S.sprint ? Math.max(0, diffD(today(), S.sprint.exam)) : 0; }
 function sprintActive(){ return !!(S.sprint && S.sprint.on && sprintDaysLeft()>0); }
-function sprintDoneCount(){ return (S.sprint && S.sprint.items || []).filter(i=>i.seen).length; }
+function sprintDoneCount(){ return (S.sprint && S.sprint.items || []).filter(i=>i.seen && !i.skipped).length; }
 function sprintTodayNew(){
   const r = S.sprint && S.sprint.days && S.sprint.days[today()];
   return Number(r && r.new) || 0;
@@ -1150,10 +1151,10 @@ function sprintNewTarget(){
 }
 function sprintDueList(){
   const t = today();
-  return (S.sprint && S.sprint.items || []).filter(i=>i.seen && dueDate(i) && dueDate(i)<=t)
+  return (S.sprint && S.sprint.items || []).filter(i=>i.seen && !i.skipped && dueDate(i) && dueDate(i)<=t)
     .sort((a,b)=> String(dueDate(a)).localeCompare(String(dueDate(b))) || (b.unknown||0)-(a.unknown||0));
 }
-function sprintUnknownCount(){ return (S.sprint && S.sprint.items || []).filter(i=>i.seen && (i.unknown||0)>0).length; }
+function sprintUnknownCount(){ return (S.sprint && S.sprint.items || []).filter(i=>i.seen && !i.skipped && (i.unknown||0)>0).length; }
 function sprintDayRec(){
   const t = today();
   S.sprint.days = S.sprint.days || {};
@@ -1186,7 +1187,8 @@ async function sprintAddWords(n){
   (S.items||[]).forEach(i=>{ if(i.learned) have.add(normEn(i.en)); });
   const t = today();
   const added = [];
-  for(const w of (bk.words||[])){
+  const start = bookStartIndex(bk);
+  for(const w of (bk.words||[]).slice(start)){
     if(added.length >= n) break;
     const k = normEn(w);
     if(!k || have.has(k)) continue;
@@ -1196,7 +1198,7 @@ async function sprintAddWords(n){
     const it = makeItem(w, zh, [bk.name]);
     it.book = bk.id; it.bookName = bk.name;
     it.learned = true; it.status = 'active';
-    it.sprint = true; it.seen = false; it.unknown = 0;
+    it.sprint = true; it.seen = false; it.skipped = false; it.unknown = 0;
     it.fsrs = {d:fsrsD0(3), s:fsrsS0(3), reps:0, lapses:0, state:1, last:Date.now(), due:t, ivl:1, lastGrade:3};
     it.nextDate = t;
     S.sprint.items.push(it);
@@ -4558,12 +4560,12 @@ async function startSprint(){
   if(!S.sprint || !S.sprint.on){ toast('先开启期末冲刺'); openSprintPlan(); return; }
   if(sprintDaysLeft() <= 0){ toast('考试已经到啦，冲刺结束'); return; }
   const target = sprintNewTarget();
-  const unseen = (S.sprint.items||[]).filter(i=>!i.seen);
+  const unseen = (S.sprint.items||[]).filter(i=>!i.seen && !i.skipped);
   const toAdd = Math.max(0, target - unseen.length);
   if(toAdd) await sprintAddWords(toAdd);
   const due = sprintDueList();
   const reviews = due.slice(0, 180);
-  const newCards = target>0 ? (S.sprint.items||[]).filter(i=>!i.seen).slice(0, target) : [];
+  const newCards = target>0 ? (S.sprint.items||[]).filter(i=>!i.seen && !i.skipped).slice(0, target) : [];
   const q = [];
   let ri=0, ni=0;
   while(ri<reviews.length || ni<newCards.length){
@@ -4614,9 +4616,12 @@ function renderSprint(){
       <div class="word${wordCls}">${esc(it.en)}</div>
       ${phonOf(it.en)?`<div class="phon">/${esc(phonOf(it.en))}/</div>`:''}
       <div class="senses"><div class="sense">${esc(it.zh||'')}</div></div>
-      <div class="hintline">先认个脸，明天开始按 FSRS 复习</div>
+      <div class="hintline">先认个脸，明天开始按 FSRS 复习<br>已经会了？点「太简单」跳过，不占目标</div>
     </div>
-    <div class="actions"><button class="btn primary" data-act="sprintNewDone">认识了，下一个</button></div>`;
+    <div class="actions">
+      <button class="btn" data-act="sprintSkip">太简单，跳过</button>
+      <button class="btn primary" data-act="sprintNewDone">认识了，下一个</button>
+    </div>`;
   }else{
     html += `<div class="bigcard">
       <div class="word${wordCls}">${esc(it.en)}</div>
@@ -4642,6 +4647,23 @@ function sprintNewDone(){
   sprintRun.idx++;
   sprintRun.token++;
   renderSprint();
+}
+async function sprintSkip(){
+  if(!sprintRun || sprintRun.finished) return;
+  const q = sprintRun.queue[sprintRun.idx];
+  if(!q || !q.isNew) return;
+  q.it.skipped = true;
+  q.it.seen = false;
+  save();
+  const added = await sprintAddWords(1);
+  if(added.length){
+    sprintRun.queue.push({it:added[0], isNew:true});
+    sprintRun.total = sprintRun.queue.length;
+  }
+  sprintRun.idx++;
+  sprintRun.token++;
+  renderSprint();
+  toast(added.length?'太简单，已跳过':'已跳过');
 }
 function sprintGrade(known){
   if(!sprintRun || sprintRun.finished || sprintRun.revealed) return;
@@ -4678,7 +4700,7 @@ function sprintBack(){
 async function sprintMore(){
   if(!sprintRun) return;
   await sprintAddWords(10);
-  const extra = (S.sprint.items||[]).filter(i=>!i.seen).slice(0,10).map(it=>({it, isNew:true}));
+  const extra = (S.sprint.items||[]).filter(i=>!i.seen && !i.skipped).slice(0,10).map(it=>({it, isNew:true}));
   if(!extra.length){ toast('词书已经取完了'); return; }
   sprintRun.queue.push(...extra);
   sprintRun.total = sprintRun.queue.length;
@@ -4692,6 +4714,7 @@ function openSprintPlan(){
   if(!S.sprint) return;
   const done = sprintDoneCount(), goal = Number(S.sprint.goal)||1920, left = sprintDaysLeft();
   const target = sprintNewTarget(), due = sprintDueList().length, weak = sprintUnknownCount();
+  const startPct = Math.max(0, Math.min(80, Number(S.settings.bookStart)||0));
   let rows = '';
   let remain = Math.max(0, goal-done), cum = done;
   for(let w=0; w<7 && left>0; w++){
@@ -4720,11 +4743,16 @@ function openSprintPlan(){
       <div style="font-weight:650;font-size:13.5px">每天怎么学</div>
       <div style="font-size:12px;color:var(--ink2);margin-top:4px;line-height:1.7">
         先认新词（看英文 + 中文，不默写），第二天开始按 FSRS 复习；复习时先想中文，再点「认识 / 不认识」。<br>
+        从词书第 ${startPct}% 开始取词，跳过最常用的基础词；认词时觉得太简单可以点「太简单，跳过」，不占目标。<br>
         20 分钟是软上限；时间到就收工，没做完的顺延。
       </div>
       <div class="chips" style="margin-top:8px">
         ${[1440,1920,2400].map(g=>`<button class="chip sm ${goal===g?'on':''}" data-act="sprintGoal" data-g="${g}">${g} 词（约 ${Math.ceil(g/48)}/天）</button>`).join('')}
       </div>
+      <div class="chips" style="margin-top:4px">
+        ${[0,25,40,60].map(p=>`<button class="chip sm ${startPct===p?'on':''}" data-act="sprintStartPct" data-p="${p}">从 ${p}% 开始</button>`).join('')}
+      </div>
+      <div style="font-size:11px;color:var(--ink3);margin-top:4px">取词起点与普通模式共用，只影响之后取的新词；已有的简单词可以点「太简单，跳过」。</div>
       <button class="chip sm ${S.sprint.pauseNormalNew?'on':''}" data-act="sprintPause" style="margin-top:4px">
         冲刺期间暂停普通新词${S.sprint.pauseNormalNew?'（已开）':'（已关）'}
       </button>
@@ -4758,6 +4786,10 @@ function sprintOff(){
 }
 function sprintSetGoal(g){
   S.sprint.goal = Number(g)||1920;
+  save(); renderHome(); openSprintPlan();
+}
+function sprintSetStart(g){
+  S.settings.bookStart = Math.max(0, Math.min(80, Number(g)||0));
   save(); renderHome(); openSprintPlan();
 }
 function sprintTogglePause(){
@@ -5168,13 +5200,16 @@ function openWhatsNew(){
   S.settings.seen291 = true;
   S.settings.seen292 = true;
   S.settings.seen293 = true;
+  S.settings.seen294 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.9.3 更新';
+  $('#sheetTitle').textContent = '温故 2.9.4 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.9.3 修正</b><br>
-      · 从冲刺计划页点「开始今天的认词」时，先关闭计划弹层再进入认词，不再挡在卡片上<br>
-      · 首页冲刺卡片窄屏适配；点卡片任意位置看计划<br><br>
+      <b style="color:var(--ink)">2.9.4 冲刺取词不再从 the/be/and 开始</b><br>
+      · 冲刺取词和普通模式共用起点，默认跳过前 25% 最常用的基础词（约 900 个）<br>
+      · 计划页可以直接切「从 0/25/40/60% 开始」，只影响之后取的新词<br>
+      · 新词卡增加「太简单，跳过」：跳过不占目标，也不会计入已认<br>
+      · 已有的简单词可以逐个跳过，系统会自动补下一个<br><br>
       <b style="color:var(--ink)">2.9.0 期末冲刺：48 天，每天 20 分钟</b><br>
       · 只要求看到英文能想起中文，不考拼写；默认 1920 词（约 40/天）<br>
       · 高频优先；新词看一遍，第二天开始按 FSRS 复习；20 分钟软上限<br>
@@ -5890,6 +5925,7 @@ document.addEventListener('click', e=>{
     case 'startSprint': startSprint(); break;
     case 'sprintBack': sprintBack(); break;
     case 'sprintNewDone': sprintNewDone(); break;
+    case 'sprintSkip': sprintSkip(); break;
     case 'sprintKnow': sprintGrade(true); break;
     case 'sprintDont': sprintGrade(false); break;
     case 'sprintNext': sprintNext(); break;
@@ -5897,6 +5933,7 @@ document.addEventListener('click', e=>{
     case 'sprintMore': sprintMore(); break;
     case 'sprintPlan': openSprintPlan(); break;
     case 'sprintGoal': sprintSetGoal(t.dataset.g); break;
+    case 'sprintStartPct': sprintSetStart(t.dataset.p); break;
     case 'sprintPause': sprintTogglePause(); break;
     case 'notesBack': goHome(); break;
     case 'addNote': openNoteEditor(); break;
@@ -6189,7 +6226,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen293) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen294) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
