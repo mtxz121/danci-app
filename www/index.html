@@ -495,7 +495,7 @@ body.dark .s4{background:#33191b;color:#f2737a}body.dark .s5{background:#0f2a2a;
 const KEY = 'wordapp_v1';
 const META_KEY = 'wordapp_meta_v2';
 const DB_NAME = 'wengu_db', DB_VER = 1, DB_STORE = 'kv';
-let APP_VERSION = '2.9.6';      // 每次发版递增，同时改 www/version.json
+let APP_VERSION = '2.9.7';      // 每次发版递增，同时改 www/version.json
 const GAPS = [1,1,2,3,4,4,6,9,15,15];
 const TOTAL_STAGE = 10;
 const MAX_FILL_SENSES = 2;      // 词典自动补全最多取几条释义
@@ -514,7 +514,7 @@ const DEFAULTS = {
     theme:'light', onlineAudio:true, autoSpeak:true, autoBackup:true,
     reminder:false, remindTime:'20:00', sessionMin:15, listenInExam:false, recallFirst:true, misGap:'xlong',
     lastSubject:'物理', lastBook:{}, lastTopic:{},
-    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, seen290:false, seen291:false, seen292:false, seen293:false, seen294:false, seen295:false, seen296:false, fsrsDR:0.9,
+    newPerDay:7, paperCap:40, answerCap:60, seen20:false, seen201:false, seen21:false, seen22:false, seen221:false, seen222:false, seen230:false, seen240:false, seen250:false, seen260:false, seen270:false, seen271:false, seen272:false, seen280:false, seen290:false, seen291:false, seen292:false, seen293:false, seen294:false, seen295:false, seen296:false, seen297:false, fsrsDR:0.9,
     book:'', bookName:'', bookStart:25, bookShuffle:false
   },
   clockOffset: 0,
@@ -525,7 +525,7 @@ const DEFAULTS = {
   learn: null,
   mistakes: [],
   notes: [],
-  sprint: {on:false, exam:'2027-01-11', goal:1920, pauseNormalNew:true, book:'gk', items:[], days:{}},
+  sprint: {on:false, exam:'2027-01-11', goal:1800, pauseNormalNew:true, book:'gk1900', items:[], days:{}},
   spellHeat: {}
 };
 
@@ -602,13 +602,19 @@ function load(){
       n.updatedAt = n.updatedAt || 0;
     });
     if(!d.sprint || typeof d.sprint!=='object'){
-      d.sprint = {on:false, exam:'2027-01-11', goal:1920, pauseNormalNew:true, book:'gk', items:[], days:{}};
+      d.sprint = {on:false, exam:'2027-01-11', goal:1800, pauseNormalNew:true, book:'gk1900', items:[], days:{}};
     }
     d.sprint.items = Array.isArray(d.sprint.items) ? d.sprint.items.filter(x=>x && x.en) : [];
     d.sprint.days = (d.sprint.days && typeof d.sprint.days==='object') ? d.sprint.days : {};
     d.sprint.exam = d.sprint.exam || '2027-01-11';
-    d.sprint.goal = Number(d.sprint.goal)||1920;
-    d.sprint.book = d.sprint.book || 'gk';
+    d.sprint.book = d.sprint.book || 'gk1900';
+    // 2.9.7：冲刺改用「高中进阶 1900」词书（已剔除初中基础词），起点归零、目标按新词书收敛
+    if(d.sprint.book === 'gk'){
+      d.sprint.book = 'gk1900';
+      d.sprint.startPct = 0;
+      d.sprint.goal = Math.min(Number(d.sprint.goal)||1800, 1800);
+    }
+    d.sprint.goal = Number(d.sprint.goal)||1800;
     d.sprint.pauseNormalNew = d.sprint.pauseNormalNew !== false;
     d.sprint.startPct = (d.sprint.startPct == null) ? null : Math.max(0, Math.min(80, Number(d.sprint.startPct)||0));
     d.sprint.items.forEach(it=>{
@@ -1152,7 +1158,8 @@ function dueItems(){
 function sprintDaysLeft(){ return S.sprint ? Math.max(0, diffD(today(), S.sprint.exam)) : 0; }
 function sprintStartPct(){
   if(!S.sprint) return 0;
-  const v = (S.sprint.startPct != null) ? S.sprint.startPct : S.settings.bookStart;
+  // 冲刺词书已剔除初中基础词，默认从头开始；只有用户显式设置过起点才跳过
+  const v = (S.sprint.startPct != null) ? S.sprint.startPct : 0;
   return Math.max(0, Math.min(80, Number(v)||0));
 }
 function sprintStartIndex(bk){ return Math.floor(((bk && bk.words) || []).length * sprintStartPct()/100); }
@@ -1200,7 +1207,7 @@ async function sprintAddWords(n){
   n = Math.max(0, Number(n)||0);
   if(!n) return [];
   await loadBooks();
-  const bk = bookById(S.sprint.book || 'gk');
+  const bk = bookById(S.sprint.book || 'gk1900');
   if(!bk) return [];
   const have = new Set();
   (S.sprint.items||[]).forEach(i=>have.add(normEn(i.en)));
@@ -4732,7 +4739,10 @@ async function sprintMore(){
 }
 function openSprintPlan(){
   if(!S.sprint) return;
-  const done = sprintDoneCount(), goal = Number(S.sprint.goal)||1920, left = sprintDaysLeft();
+  const sprintBk = bookById(S.sprint.book || 'gk1900');
+  const capWords = (sprintBk && sprintBk.words) ? sprintBk.words.length : 1838;
+  const goalList = [1200, 1500, 1800].filter(g=>g<=capWords);
+  const done = sprintDoneCount(), goal = Math.min(Number(S.sprint.goal)||1800, capWords), left = sprintDaysLeft();
   const target = sprintNewTarget(), due = sprintDueList().length, weak = sprintUnknownCount();
   const startPct = sprintStartPct();
   let rows = '';
@@ -4763,16 +4773,17 @@ function openSprintPlan(){
       <div style="font-weight:650;font-size:13.5px">每天怎么学</div>
       <div style="font-size:12px;color:var(--ink2);margin-top:4px;line-height:1.7">
         先认新词（看英文 + 中文，不默写），第二天开始按 FSRS 复习；复习时先想中文，再点「认识 / 不认识」。<br>
-        从词书第 ${startPct}% 开始取词，跳过最常用的基础词；认词时觉得太简单可以点「太简单，跳过」，不占目标。<br>
+        冲刺词书：<b style="color:var(--ink)">高中进阶 1900</b>（共 ${capWords} 词，已剔除初中基础词，从 case / system 这类开始）。<br>
+        从词书第 ${startPct}% 开始取词；认词时觉得太简单可以点「太简单，跳过」，不占目标。<br>
         20 分钟是软上限；时间到就收工，没做完的顺延。
       </div>
       <div class="chips" style="margin-top:8px">
-        ${[1440,1920,2400].map(g=>`<button class="chip sm ${goal===g?'on':''}" data-act="sprintGoal" data-g="${g}">${g} 词（约 ${Math.ceil(g/48)}/天）</button>`).join('')}
+        ${goalList.map(g=>`<button class="chip sm ${goal===g?'on':''}" data-act="sprintGoal" data-g="${g}">${g} 词（约 ${Math.ceil(g/48)}/天）</button>`).join('')}
       </div>
       <div class="chips" style="margin-top:4px">
-        ${[0,25,40,60].map(p=>`<button class="chip sm ${startPct===p?'on':''}" data-act="sprintStartPct" data-p="${p}">从 ${p}% 开始</button>`).join('')}
+        ${[0,10,20,30].map(p=>`<button class="chip sm ${startPct===p?'on':''}" data-act="sprintStartPct" data-p="${p}">从 ${p}% 开始</button>`).join('')}
       </div>
-      <div style="font-size:11px;color:var(--ink3);margin-top:4px">冲刺独立起点，普通模式不受影响；只影响之后取的新词；已有的简单词可以点「太简单，跳过」。</div>
+      <div style="font-size:11px;color:var(--ink3);margin-top:4px">词书已去掉初中基础词，默认从 0% 开始；冲刺独立起点，普通模式不受影响；只影响之后取的新词。</div>
       <button class="btn" data-act="sprintTest" style="height:34px;font-size:12.5px;margin-top:6px">先测 50 个词，自动定起点</button>
       ${S.sprint.test?`<div style="font-size:11px;color:var(--ink3);margin-top:4px">上次测：认识 ${S.sprint.test.known}/${S.sprint.test.total} → 建议 ${S.sprint.test.pct}%</div>`:''}
       <button class="chip sm ${S.sprint.pauseNormalNew?'on':''}" data-act="sprintPause" style="margin-top:4px">
@@ -4807,7 +4818,7 @@ function sprintOff(){
   toast('已关闭冲刺，普通新词恢复');
 }
 function sprintSetGoal(g){
-  S.sprint.goal = Number(g)||1920;
+  S.sprint.goal = Number(g)||1800;
   save(); renderHome(); openSprintPlan();
 }
 function sprintSetStart(g){
@@ -4821,7 +4832,7 @@ function sprintTogglePause(){
 async function openSprintTest(){
   if(!S.sprint) return;
   await loadBooks();
-  const bk = bookById(S.sprint.book || 'gk');
+  const bk = bookById(S.sprint.book || 'gk1900');
   if(!bk || !bk.words || !bk.words.length){ toast('词书还没加载好'); return; }
   if(sprintRun){ stopSprintClock(); sprintRun = null; }
   const N = bk.words.length, n = Math.min(50, N);
@@ -4858,6 +4869,8 @@ function sprintTestRecommend(){
     }
   }
   pct = Math.max(0, Math.min(80, pct));
+  // 进阶词书已剔除初中基础词，再往后跳会不够 48 天用，最多跳 30%
+  if((S.sprint.book || 'gk1900') === 'gk1900') pct = Math.min(pct, 30);
   return {pct, rates, known:s.filter(x=>x.known).length};
 }
 function renderSprintTest(){
@@ -4871,8 +4884,9 @@ function renderSprintTest(){
       <div class="bigcard" style="justify-content:center">
         <div style="font-size:42px">🎯</div>
         <div class="phon" style="font-size:17px;color:var(--ink);margin-top:8px">建议从 ${rec.pct}% 开始</div>
-        <div class="hintline" style="margin-top:10px">50 个词里认识 ${rec.known} 个 · 约从第 ${rank} 个高频词开始</div>
+        <div class="hintline" style="margin-top:10px">50 个词里认识 ${rec.known} 个 · 约从第 ${rank} 个词开始</div>
         <div class="hintline">这个位置之前大多认识，之后生词变多</div>
+        <div class="hintline" style="font-size:11.5px">进阶词书已去掉基础词，建议最多跳 30%，保证 48 天有词可认</div>
       </div>
       <div class="actions">
         <button class="btn" data-act="sprintTestAgain">重测</button>
@@ -5324,15 +5338,17 @@ function openWhatsNew(){
   S.settings.seen294 = true;
   S.settings.seen295 = true;
   S.settings.seen296 = true;
+  S.settings.seen297 = true;
   save();
-  $('#sheetTitle').textContent = '温故 2.9.6 更新';
+  $('#sheetTitle').textContent = '温故 2.9.7 更新';
   $('#sheetBody').innerHTML = `
     <div style="font-size:13px;line-height:2;color:var(--ink2)">
-      <b style="color:var(--ink)">2.9.6 修正定起点遮挡</b><br>
-      · 从冲刺计划页点「先测 50 个词」时，先关闭计划弹层，再进入测试，不再被遮挡<br><br>
-      <b style="color:var(--ink)">2.9.5</b><br>
-      · 50 个词自动定起点：按 0/20/40/60/80% 分段抽样，认识率掉到 50% 的位置作为起点<br>
-      · 冲刺起点独立，不影响普通模式
+      <b style="color:var(--ink)">2.9.7 冲刺专用词书</b><br>
+      · 新增「高中进阶 1900」：高考词汇里去掉初中已学的词，剩 1838 个高中新增词，难度从 case / system 起，不再从 the / be / a 开始<br>
+      · 冲刺默认改用这本词书，起点归零，目标按词书收为 1200 / 1500 / 1800<br>
+      · 普通模式词书不受影响，也可以在「换一本」里手动选它<br><br>
+      <b style="color:var(--ink)">2.9.6</b><br>
+      · 从冲刺计划页点「先测 50 个词」时，先关闭计划弹层，再进入测试，不再被遮挡
     </div>
     <button class="btn primary" data-act="closeSheet" style="width:100%;margin-top:18px;height:44px">知道了</button>`;
   openSheet();
@@ -5758,7 +5774,8 @@ function mergeBackupObject(o){
     const cur = S.sprint || {};
     cur.on = !!(o.sprint.on || cur.on);
     cur.exam = o.sprint.exam || cur.exam || '2027-01-11';
-    cur.goal = Number(o.sprint.goal)||Number(cur.goal)||1920;
+    cur.goal = Math.min(Number(o.sprint.goal)||Number(cur.goal)||1800, 1800);
+    cur.book = (o.sprint.book && o.sprint.book !== 'gk') ? o.sprint.book : (cur.book || 'gk1900');
     cur.pauseNormalNew = o.sprint.pauseNormalNew !== undefined ? !!o.sprint.pauseNormalNew : (cur.pauseNormalNew !== false);
     cur.startPct = (o.sprint.startPct != null) ? Math.max(0, Math.min(80, Number(o.sprint.startPct)||0)) : cur.startPct;
     cur.test = o.sprint.test || cur.test;
@@ -6353,7 +6370,7 @@ $('#mask').addEventListener('click', closeSheet);
     setTimeout(()=>{ writeSnapshot(); capBackup(); }, 1200);
   }
   if(S.settings.reminder) setTimeout(scheduleReminder, 2000);
-  if(!S.settings.seen296) setTimeout(openWhatsNew, 900);
+  if(!S.settings.seen297) setTimeout(openWhatsNew, 900);
 })();
 </script>
 </body>
